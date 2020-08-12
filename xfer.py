@@ -876,7 +876,8 @@ def copy_with_hash(src_path: Path, dest_path: Path) -> Tuple[Any, int]:
 
         logging.info("Copying file metadata from {} to {}".format(src_path, tmp_path))
 
-        shutil.copystat(src_path, tmp_path)
+        # py3.5 compat; copystat did not take Paths yet
+        shutil.copystat(str(src_path), str(tmp_path))
 
         logging.info("Copied file metadata")
 
