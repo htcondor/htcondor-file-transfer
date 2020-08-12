@@ -14,27 +14,26 @@ import logging
 import os
 import shutil
 import sys
+import re
 import json
 import time
 from pathlib import Path
 from typing import (
     Optional,
     Mapping,
-    TypeVar,
     Dict,
     List,
     Any,
     Tuple,
     Iterator,
     Iterable,
-    cast,
+    Type,
+    TypeVar,
 )
 
 import htcondor
 import classad
 
-K = TypeVar("K")
-V = TypeVar("V")
 T_JSON = Dict[str, Any]
 T_CMD_INFO = List[Mapping[str, Path]]
 
@@ -44,9 +43,19 @@ GB = 2 ** 30
 TB = 2 ** 40
 
 METADATA_FILE_SIZE_LIMIT = 16 * KB
-SANDBOX_FILE_NAME = "file-for-xfer"
+
+SANDBOX_FILE_NAME = "file-for-transfer"
 REQUIREMENTS_FILE_NAME = "requirements.txt"
 METADATA_FILE_NAME = "metadata"
+LOCAL_MANIFEST_FILE_NAME = "local_manifest.txt"
+REMOTE_MANIFEST_FILE_NAME = "remote_manifest.txt"
+TRANSFER_MANIFEST_FILE_NAME = "transfer_manifest.txt"
+TRANSFER_COMMANDS_FILE_NAME = "transfer_commands.json"
+VERIFY_COMMANDS_FILE_NAME = "verify_commands.json"
+
+OUTER_DAG_NAME = "outer.dag"
+INNER_DAG_NAME = "inner.dag"
+DAG_ARGS = {"force": 1}
 
 THIS_FILE = Path(__file__).resolve()
 
@@ -55,11 +64,11 @@ class TransferError(Exception):
     pass
 
 
-class InvalidManifestEntry(TransferError, ValueError):
+class InvalidManifestEntry(TransferError):
     pass
 
 
-class InconsistentManifest(TransferError, ValueError):
+class InconsistentManifest(TransferError):
     pass
 
 
@@ -73,6 +82,36 @@ class VerificationFailed(TransferError):
 
 class NotACondorJob(TransferError):
     pass
+
+
+class StrEnum(str, enum.Enum):
+    def __repr__(self):
+        return repr(self.value)
+
+    def __str__(self):
+        return self.value
+
+
+class Commands(StrEnum):
+    SYNC = "sync"
+    MAKE_REMOTE_FILE_MANIFEST = "make_remote_file_manifest"
+    WRITE_INNER_DAG = "write_inner_dag"
+    PULL_FILE = "pull_file"
+    PUSH_FILE = "push_file"
+    GET_REMOTE_METADATA = "get_remote_metadata"
+    VERIFY_METADATA = "verify_metadata"
+    FINALIZE_TRANSFER_MANIFEST = "finalize_transfer_manifest"
+
+
+class TransferDirection(StrEnum):
+    PULL = "pull"
+    PUSH = "push"
+
+
+DIRECTION_TO_COMMAND = {
+    TransferDirection.PULL: Commands.PULL_FILE,
+    TransferDirection.PUSH: Commands.PUSH_FILE,
+}
 
 
 def timestamp() -> float:
@@ -90,14 +129,11 @@ def read_requirements_file(requirements_file: Optional[Path]) -> Optional[str]:
     return requirements_file.read_text().strip()
 
 
-class ManifestEntryType(str, enum.Enum):
-    TRANSFER_REQUEST = "TRANSFER_REQUEST"
-    VERIFY_REQUEST = "VERIFY_REQUEST"
-    TRANSFER_VERIFIED = "TRANSFER_VERIFIED"
-    SYNC_REQUEST = "SYNC_REQUEST"
-    SYNC_DONE = "SYNC_DONE"
-    FILE = "FILE"
-    METADATA = "METADATA"
+RE_SPLIT_CAMEL = re.compile(r".+?(?:(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|$)")
+
+
+def camel_to_upper_snake(text: str) -> str:
+    return "_".join(m.group(0).upper() for m in RE_SPLIT_CAMEL.finditer(text))
 
 
 class ManifestEntry(metaclass=abc.ABCMeta):
@@ -132,57 +168,55 @@ class ManifestEntry(metaclass=abc.ABCMeta):
         file.write(self.to_entry())
 
     @property
+    def type(self) -> str:
+        return camel_to_upper_snake(type(self).__name__)
+
+    @property
     @abc.abstractmethod
     def keys(self) -> Tuple[str, ...]:
         raise NotImplementedError
 
-    @property
-    @abc.abstractmethod
-    def type(self) -> ManifestEntryType:
-        raise NotImplementedError
 
-
-class NameAndSize(ManifestEntry):
+class Name(ManifestEntry, metaclass=abc.ABCMeta):
     @property
     def name(self):
         return Path(self._info["name"])
 
+
+class Size(ManifestEntry, metaclass=abc.ABCMeta):
     @property
     def size(self):
         return int(self._info["size"])
 
 
-class Digest(NameAndSize):
+class Digest(Name, Size, metaclass=abc.ABCMeta):
     @property
     def digest(self):
         return self._info["digest"]
 
 
-class Timestamp(ManifestEntry):
+class Timestamp(ManifestEntry, metaclass=abc.ABCMeta):
     @property
     def timestamp(self):
         return float(self._info["timestamp"])
 
 
-class TransferRequest(NameAndSize):
-    type = ManifestEntryType.TRANSFER_REQUEST
+class TransferRequest(Name, Size):
     keys = ("name", "size")
 
 
-class VerifyRequest(NameAndSize):
-    type = ManifestEntryType.VERIFY_REQUEST
+class VerifyRequest(Name, Size):
     keys = ("name", "size")
 
 
 class TransferVerified(Digest, Timestamp):
-    type = ManifestEntryType.TRANSFER_VERIFIED
     keys = ("name", "size", "digest", "timestamp")
 
 
-class SyncRequest(ManifestEntry):
-    type = ManifestEntryType.SYNC_REQUEST
+class SyncRequest(Timestamp):
     keys = (
-        "source_prefix",
+        "direction",
+        "remote_prefix",
         "files_at_source",
         "files_to_transfer",
         "bytes_to_transfer",
@@ -193,17 +227,14 @@ class SyncRequest(ManifestEntry):
 
 
 class SyncDone(Timestamp):
-    type = ManifestEntryType.SYNC_DONE
     keys = ("timestamp",)
 
 
-class File(NameAndSize):
-    type = ManifestEntryType.FILE
+class File(Name, Size):
     keys = ("name", "size")
 
 
 class Metadata(Digest):
-    type = ManifestEntryType.METADATA
     keys = ("name", "size", "digest")
 
 
@@ -213,7 +244,9 @@ def descendants(cls):
         yield from descendants(c)
 
 
-ENTRY_TYPE_TO_CLASS = {cls.type: cls for cls in descendants(ManifestEntry)}
+ENTRY_TYPE_TO_CLASS = {
+    camel_to_upper_snake(cls.__name__): cls for cls in descendants(ManifestEntry)
+}
 
 
 def read_manifest(path: Path) -> Iterator[Tuple[ManifestEntry, int]]:
@@ -239,18 +272,21 @@ def parse_manifest_entry(entry: str) -> ManifestEntry:
     entry = entry.strip()
     type, info = entry.split(maxsplit=1)
 
-    type = ManifestEntryType(type)
-    info = json.loads(info)
-
     cls = ENTRY_TYPE_TO_CLASS[type]
+    info = json.loads(info)
 
     return cls(**info)
 
 
 def create_file_manifest(
     root_path: Path, manifest_path: Path, test_mode: bool = False
-) -> Path:
+) -> None:
+    logging.info("Generating file listing for %s", root_path)
+
     with manifest_path.open(mode="w") as f:
+        if not root_path.exists():
+            return
+
         for entry in walk(root_path):
             size = entry.stat().st_size
 
@@ -259,12 +295,8 @@ def create_file_manifest(
 
             File(name=entry.path, size=size).write_entry_to(f)
 
-    return manifest_path
 
-
-def parse_file_manifest(
-    prefix: Path, file_manifest_path: Path, log_name: str
-) -> Dict[Path, int]:
+def parse_file_manifest(prefix: Path, file_manifest_path: Path) -> Dict[Path, int]:
     files = {}
     for entry, _ in read_manifest(file_manifest_path):
         entry = check_entry_type(entry, File)
@@ -273,13 +305,9 @@ def parse_file_manifest(
         size = entry.size
 
         if prefix not in fname.parents:
-            logging.error(
-                "%s file (%s) does not start with specified prefix", log_name, fname
-            )
+            logging.error("%s file (%s) does not start with specified prefix", fname)
         if fname == prefix:
-            logging.warning(
-                "%s file, stripped of prefix (%s), is empty", log_name, prefix
-            )
+            logging.warning("%s file, stripped of prefix (%s), is empty", prefix)
             continue
         files[fname.relative_to(prefix)] = size
 
@@ -294,8 +322,8 @@ def walk(path):
             yield entry
 
 
-def write_metadata_file(src_path: Path, hash, size: int) -> None:
-    metadata = Metadata(name=src_path, digest=hash.hexdigest(), size=size)
+def write_metadata_file(path: Path, hasher, size: int) -> None:
+    metadata = Metadata(name=path, digest=hasher.hexdigest(), size=size)
 
     logging.info("File metadata: {}".format(metadata))
 
@@ -314,7 +342,10 @@ def read_metadata_file(path: Path) -> Metadata:
     return check_entry_type(entry, Metadata)
 
 
-def check_entry_type(entry, expected_type):
+T = TypeVar("T", bound=ManifestEntry)
+
+
+def check_entry_type(entry: ManifestEntry, expected_type: Type[T]) -> T:
     if not isinstance(entry, expected_type):
         raise InvalidManifestEntry(
             "Expected a {}, but got a {}".format(
@@ -322,7 +353,7 @@ def check_entry_type(entry, expected_type):
             )
         )
 
-    return cast(expected_type, entry)
+    return entry
 
 
 def write_json(j: T_JSON, path: Path) -> None:
@@ -335,14 +366,18 @@ def load_json(path: Path) -> T_JSON:
         return json.load(f)
 
 
+def make_hasher():
+    return hashlib.sha1()
+
+
 def shared_submit_descriptors(unique_id=None, requirements=None):
     return {
         "executable": THIS_FILE.as_posix(),
-        "My.Is_Transfer_Job": "true",
-        "My.WantFlocking": "true",
         "keep_claim_idle": "300",
         "request_disk": "1GB",
         "requirements": requirements if requirements is not None else "true",
+        "My.Is_Transfer_Job": "true",
+        "My.WantFlocking": "true",  # special attribute for the CHTC pool, not necessary at other sites
         "My.UniqueID": "{}".format(
             classad.quote(unique_id) if unique_id is not None else ""
         ),
@@ -350,9 +385,10 @@ def shared_submit_descriptors(unique_id=None, requirements=None):
 
 
 def submit_outer_dag(
+    direction: TransferDirection,
     working_dir: Path,
-    source_dir: Path,
-    dest_dir: Path,
+    local_dir: Path,
+    remote_dir: Path,
     requirements: Optional[str] = None,
     unique_id: Optional[str] = None,
     test_mode: bool = False,
@@ -361,32 +397,32 @@ def submit_outer_dag(
     import htcondor.dags as dags
 
     working_dir = working_dir.resolve()
-    dest_dir = dest_dir.resolve()
+    local_dir = local_dir.resolve()
 
     working_dir.mkdir(parents=True, exist_ok=True)
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    local_dir.mkdir(parents=True, exist_ok=True)
 
-    transfer_manifest_path = dest_dir / "transfer_manifest.txt"
+    transfer_manifest_path = local_dir / TRANSFER_MANIFEST_FILE_NAME
 
     outer_dag = make_outer_dag(
-        dest_dir,
-        requirements,
-        source_dir,
-        test_mode,
-        transfer_manifest_path,
-        unique_id,
-        working_dir,
+        direction=direction,
+        local_dir=local_dir,
+        remote_dir=remote_dir,
+        transfer_manifest_path=transfer_manifest_path,
+        working_dir=working_dir,
+        requirements=requirements,
+        unique_id=unique_id,
+        test_mode=test_mode,
     )
 
     if requirements:
         write_requirements_file(working_dir, requirements)
 
     outer_dag_file = dags.write_dag(
-        outer_dag, dag_dir=working_dir, dag_file_name="outer.dag"
+        outer_dag, dag_dir=working_dir, dag_file_name=OUTER_DAG_NAME
     )
 
-    dag_args = {"force": 1}
-    sub = htcondor.Submit.from_dag(str(outer_dag_file), dag_args)
+    sub = htcondor.Submit.from_dag(str(outer_dag_file), DAG_ARGS)
 
     with change_dir(working_dir):
         schedd = htcondor.Schedd()
@@ -395,13 +431,14 @@ def submit_outer_dag(
 
 
 def make_outer_dag(
-    dest_dir,
-    requirements,
-    source_dir,
-    test_mode,
-    transfer_manifest_path,
-    unique_id,
-    working_dir,
+    direction: TransferDirection,
+    local_dir: Path,
+    remote_dir: Path,
+    transfer_manifest_path: Path,
+    working_dir: Path,
+    requirements: Optional[str],
+    unique_id: Optional[str],
+    test_mode: bool,
 ):
     # Only import htcondor.dags submit-side
     import htcondor.dags as dags
@@ -409,14 +446,16 @@ def make_outer_dag(
     outer_dag = dags.DAG()
 
     outer_dag.layer(
-        name="calc_work",
+        name="make_remote_file_manifest",
         submit_description=htcondor.Submit(
             {
-                "output": "calc_work.out",
-                "error": "calc_work.err",
-                "log": "calc_work.log",
-                "arguments": "generate {} {}".format(
-                    source_dir, "--test-mode" if test_mode else ""
+                "output": "make_remote_file_manifest.out",
+                "error": "make_remote_file_manifest.err",
+                "log": "make_remote_file_manifest.log",
+                "arguments": "{} {} {}".format(
+                    Commands.MAKE_REMOTE_FILE_MANIFEST,
+                    remote_dir,
+                    "--test-mode" if test_mode else "",
                 ),
                 "should_transfer_files": "yes",
                 **shared_submit_descriptors(unique_id, requirements),
@@ -425,34 +464,37 @@ def make_outer_dag(
         post=dags.Script(
             executable=THIS_FILE,
             arguments=[
-                "write_subdag",
-                source_dir,
-                "source_manifest.txt",
-                dest_dir,
-                "destination_manifest.txt",
-                transfer_manifest_path,
+                Commands.WRITE_INNER_DAG,
+                direction,
+                remote_dir,
+                REMOTE_MANIFEST_FILE_NAME,
+                local_dir,
                 "--requirements_file={}".format(REQUIREMENTS_FILE_NAME)
                 if requirements is not None
                 else "",
-                "--unique-id={}".format(unique_id) if unique_id is not None else "",
+                "--unique_id={}".format(unique_id) if unique_id is not None else "",
                 "--test-mode" if test_mode else "",
             ],
         ),
     ).child_subdag(
         name="inner",
-        dag_file=working_dir / "inner.dag",
+        dag_file=working_dir / INNER_DAG_NAME,
         post=dags.Script(
-            executable=THIS_FILE, arguments=["analyze", transfer_manifest_path]
+            executable=THIS_FILE,
+            arguments=[Commands.FINALIZE_TRANSFER_MANIFEST, transfer_manifest_path],
         ),
     )
+
+    logging.info("Outer DAG shape:\n{}".format(outer_dag.describe()))
 
     return outer_dag
 
 
 def write_inner_dag(
-    source_prefix: Path,
-    source_manifest: Path,
-    dest_prefix: Path,
+    direction: TransferDirection,
+    remote_prefix: Path,
+    remote_manifest: Path,
+    local_prefix: Path,
     requirements=None,
     test_mode: bool = False,
     unique_id=None,
@@ -460,23 +502,37 @@ def write_inner_dag(
     # Only import htcondor.dags submit-side
     import htcondor.dags as dags
 
-    src_files = parse_file_manifest(source_prefix, source_manifest, "Source")
-
-    destination_manifest_path = Path("destination_manifest.txt")
-    create_file_manifest(dest_prefix, destination_manifest_path)
-    dest_files = parse_file_manifest(
-        dest_prefix, destination_manifest_path, "Destination"
+    logging.info(
+        "Generating SUBGDAG for transfer of %s->%s", remote_prefix, local_prefix,
     )
 
-    files_to_xfer = set()
-    for fname in src_files:
-        if src_files[fname] != dest_files.get(fname, -1):
-            files_to_xfer.add(fname)
+    logging.info("Parsing remote file manifest...")
 
-    transfer_manifest_path = Path(os.path.join(dest_prefix, "transfer_manifest.txt"))
+    remote_files = parse_file_manifest(remote_prefix, remote_manifest)
+
+    logging.info("Generating local file manifest...")
+
+    local_manifest_path = Path(LOCAL_MANIFEST_FILE_NAME)
+    create_file_manifest(local_prefix, local_manifest_path)
+    local_files = parse_file_manifest(local_prefix, local_manifest_path)
+
+    transfer_manifest_path = local_prefix / TRANSFER_MANIFEST_FILE_NAME
     transfer_manifest_path.parent.mkdir(parents=True, exist_ok=True)
     transfer_manifest_path.touch(exist_ok=True)
 
+    # Never transfer the transfer manifest
+    local_files.pop(transfer_manifest_path.relative_to(local_prefix), None)
+
+    if direction is TransferDirection.PULL:
+        src_files, dest_files = remote_files, local_files
+    else:  # This is a PUSH
+        src_files, dest_files = local_files, remote_files
+
+    files_to_transfer = {
+        fname for fname, size in src_files.items() if size != dest_files.get(fname, -1)
+    }
+
+    # TODO: rethink this logic for push vs. pull
     # Check for files that we have already verified, and do not verify them again.
     files_verified = set()
     for entry, _ in read_manifest(transfer_manifest_path):
@@ -486,51 +542,58 @@ def write_inner_dag(
         files_verified.add(entry.name)
 
     files_to_verify = set()
-    for fname in src_files:
-        if fname in files_to_xfer:
+    for fname in remote_files:
+        if fname in files_to_transfer:
             continue
 
         if fname not in files_verified:
             files_to_verify.add(fname)
 
-    files_to_xfer = sorted(files_to_xfer)
+    files_to_transfer = sorted(files_to_transfer)
     files_to_verify = sorted(files_to_verify)
 
-    ensure_destination_dirs_exist(dest_prefix, files_to_xfer)
+    if direction is TransferDirection.PULL:
+        ensure_local_dirs_exist(local_prefix, files_to_transfer)
 
-    xfer_cmd_info = make_cmd_info(
-        files_to_xfer, source_prefix, dest_prefix, transfer_manifest_path
+    transfer_cmd_info = make_cmd_info(
+        files_to_transfer, remote_prefix, local_prefix, transfer_manifest_path
     )
     verify_cmd_info = make_cmd_info(
-        files_to_verify, source_prefix, dest_prefix, transfer_manifest_path
+        files_to_verify, remote_prefix, local_prefix, transfer_manifest_path
     )
 
-    write_cmd_info(xfer_cmd_info, Path("xfer_commands.json"))
-    write_cmd_info(verify_cmd_info, Path("verify_commands.json"))
+    write_cmd_info(transfer_cmd_info, Path(TRANSFER_COMMANDS_FILE_NAME))
+    write_cmd_info(verify_cmd_info, Path(VERIFY_COMMANDS_FILE_NAME))
 
-    inner_dag = make_inner_dag(
-        requirements, xfer_cmd_info, verify_cmd_info, unique_id, test_mode
+    dags.write_dag(
+        make_inner_dag(
+            direction=direction,
+            requirements=requirements,
+            transfer_cmd_info=transfer_cmd_info,
+            verify_cmd_info=verify_cmd_info,
+            unique_id=unique_id,
+            test_mode=test_mode,
+        ),
+        dag_dir=Path.cwd(),  # this will be the working dir of the outer DAG
+        dag_file_name=INNER_DAG_NAME,
     )
 
-    print(inner_dag.describe())
-
-    dags.write_dag(inner_dag, dag_dir=Path.cwd(), dag_file_name="inner.dag")
-
-    bytes_to_transfer = sum(src_files[fname] for fname in files_to_xfer)
+    bytes_to_transfer = sum(src_files[fname] for fname in files_to_transfer)
     bytes_to_verify = sum(src_files[fname] for fname in files_to_verify)
 
     with transfer_manifest_path.open(mode="a") as f:
         SyncRequest(
-            source_prefix=source_prefix,
+            direction=direction,
+            remote_prefix=remote_prefix,
             files_at_source=len(src_files),
-            files_to_transfer=len(files_to_xfer),
+            files_to_transfer=len(files_to_transfer),
             bytes_to_transfer=bytes_to_transfer,
             files_to_verify=len(files_to_verify),
             bytes_to_verify=bytes_to_verify,
             timestamp=timestamp(),
         ).write_entry_to(f)
 
-        for fname in files_to_xfer:
+        for fname in files_to_transfer:
             TransferRequest(name=fname, size=src_files[fname]).write_entry_to(f)
 
         for fname in files_to_verify:
@@ -538,8 +601,9 @@ def write_inner_dag(
 
 
 def make_inner_dag(
+    direction: TransferDirection,
     requirements: Optional[str],
-    xfer_cmd_info: T_CMD_INFO,
+    transfer_cmd_info: T_CMD_INFO,
     verify_cmd_info: T_CMD_INFO,
     unique_id: Optional[str] = None,
     test_mode: bool = False,
@@ -551,28 +615,53 @@ def make_inner_dag(
         max_jobs_by_category={"TRANSFER_JOBS": 1} if test_mode else None
     )
 
+    tof = [METADATA_FILE_NAME]
+    tor = {METADATA_FILE_NAME: "$(flattened_name).metadata"}
+
+    pull_tof = [SANDBOX_FILE_NAME]
+    pull_tor = {SANDBOX_FILE_NAME: "$(local_file)"}
+
+    shared_descriptors = shared_submit_descriptors(unique_id, requirements)
+
     inner_dag.layer(
-        name="xfer",
+        name=direction,
         submit_description=htcondor.Submit(
             {
-                "output": "$(src_file_noslash).out",
-                "error": "$(src_file_noslash).err",
-                "log": "xfer_file.log",
-                "arguments": classad.quote("exec '$(src_file)'"),
+                "output": "$(flattened_name).out",
+                "error": "$(flattened_name).err",
+                "log": "transfer_file.log",
+                "arguments": classad.quote(
+                    "{} '$(remote_file)'".format(DIRECTION_TO_COMMAND[direction])
+                ),
                 "should_transfer_files": "yes",
-                "transfer_output_files": "{}, metadata".format(SANDBOX_FILE_NAME),
+                "transfer_input_files": "$(local_file)"
+                if direction is TransferDirection.PUSH
+                else "",
+                "transfer_output_files": ", ".join(
+                    tof + (pull_tof if direction is TransferDirection.PULL else [])
+                ),
                 "transfer_output_remaps": classad.quote(
-                    "{} = $(dest); metadata = $(src_file_noslash).metadata".format(
-                        SANDBOX_FILE_NAME
+                    " ; ".join(
+                        "{} = {}".format(k, v)
+                        for k, v in {
+                            **tor,
+                            **(pull_tor if TransferDirection.PULL else {}),
+                        }.items()
                     )
                 ),
-                **shared_submit_descriptors(unique_id, requirements),
+                **shared_descriptors,
             }
         ),
-        vars=xfer_cmd_info,
+        vars=transfer_cmd_info,
         post=dags.Script(
             executable=THIS_FILE,
-            arguments=["verify", "--json=xfer_commands.json", "--fileid", "$JOB"],
+            arguments=[
+                Commands.VERIFY_METADATA,
+                "--cmd-info",
+                TRANSFER_COMMANDS_FILE_NAME,
+                "--key",
+                "$JOB",
+            ],
         ),
     )
 
@@ -580,24 +669,34 @@ def make_inner_dag(
         name="verify",
         submit_description=htcondor.Submit(
             {
-                "output": "$(src_file_noslash).out",
-                "error": "$(src_file_noslash).err",
+                "output": "$(flattened_name).out",
+                "error": "$(flattened_name).err",
                 "log": "verify_file.log",
-                "arguments": classad.quote("verify_remote '$(src_file)'"),
-                "should_transfer_files": "yes",
-                "transfer_output_files": METADATA_FILE_NAME,
-                "transfer_output_remaps": classad.quote(
-                    "metadata = $(src_file_noslash).metadata"
+                "arguments": classad.quote(
+                    "{} '$(remote_file)'".format(Commands.GET_REMOTE_METADATA)
                 ),
-                **shared_submit_descriptors(unique_id, requirements),
+                "should_transfer_files": "yes",
+                "transfer_output_files": ", ".join(tof),
+                "transfer_output_remaps": classad.quote(
+                    " ; ".join("{} = {}".format(k, v) for k, v in tor.items())
+                ),
+                **shared_descriptors,
             }
         ),
         vars=verify_cmd_info,
         post=dags.Script(
             executable=THIS_FILE,
-            arguments=["verify", "--json=verify_commands.json", "--fileid", "$JOB"],
+            arguments=[
+                Commands.VERIFY_METADATA,
+                "--cmd-info",
+                VERIFY_COMMANDS_FILE_NAME,
+                "--key",
+                "$JOB",
+            ],
         ),
     )
+
+    logging.info("Inner DAG shape:\n{}".format(inner_dag.describe()))
 
     return inner_dag
 
@@ -610,25 +709,24 @@ def change_dir(dir):
     os.chdir(original)
 
 
-def ensure_destination_dirs_exist(prefix: Path, files_to_xfer: Iterable[Path]):
-    dest_dirs = {(prefix / relative_path).parent for relative_path in files_to_xfer}
-    for dest_dir in dest_dirs:
-        dest_dir.mkdir(exist_ok=True, parents=True)
+def ensure_local_dirs_exist(prefix: Path, relative_paths: Iterable[Path]) -> None:
+    for d in {(prefix / relative_path).parent for relative_path in relative_paths}:
+        d.mkdir(exist_ok=True, parents=True)
 
 
-def make_cmd_info(files, source_prefix, dest_prefix, transfer_manifest_path):
+def make_cmd_info(files, remote_prefix, local_prefix, transfer_manifest_path):
     cmd_info = []
 
     for fname in files:
-        src_file = os.path.join(source_prefix, fname)
-        src_file_noslash = flatten_path(fname)
-        dest = os.path.join(dest_prefix, fname)
+        remote_file = remote_prefix / fname
+        local_file = local_prefix / fname
+        flattened_name = flatten_path(fname)
 
         info = {
-            "src_file": src_file,
-            "src_file_noslash": src_file_noslash,
-            "dest": dest,
-            "dest_prefix": dest_prefix,
+            "remote_file": remote_file,
+            "local_file": local_file,
+            "local_prefix": local_prefix,
+            "flattened_name": flattened_name,
             "transfer_manifest": transfer_manifest_path,
         }
         cmd_info.append(info)
@@ -648,84 +746,86 @@ def path_values_to_strings(mapping):
     return {k: str(v) if isinstance(v, Path) else v for k, v in mapping.items()}
 
 
-def xfer_exec(src_path: Path) -> None:
-    check_running_as_job()
+def pull_file(path: Path) -> None:
+    sandbox_path = Path(os.environ["_CONDOR_SCRATCH_DIR"]) / SANDBOX_FILE_NAME
 
-    dest_path = Path(os.environ["_CONDOR_SCRATCH_DIR"]) / SANDBOX_FILE_NAME
+    hash, byte_count = copy_with_hash(src_path=path, dest_path=sandbox_path)
 
-    hash, byte_count = copy_with_hash(src_path, dest_path)
-
-    write_metadata_file(src_path, hash, byte_count)
+    write_metadata_file(path, hash, byte_count)
 
 
-def verify_remote(src_path: Path) -> None:
-    check_running_as_job()
+def push_file(path: Path) -> None:
+    sandbox_path = Path(os.environ["_CONDOR_SCRATCH_DIR"]) / path.name
 
-    hash, byte_count = hash_file(src_path)
+    hash, byte_count = copy_with_hash(src_path=sandbox_path, dest_path=path)
 
-    write_metadata_file(src_path, hash, byte_count)
-
-
-def check_running_as_job():
-    if "_CONDOR_JOB_AD" not in os.environ:
-        raise NotACondorJob("This step must be run as an HTCondor job.")
+    write_metadata_file(path, hash, byte_count)
 
 
-def verify(
-    dest_prefix: Path, dest: Path, metadata_path: Path, transfer_manifest_path: Path
+def get_remote_metadata(path: Path) -> None:
+    hash, byte_count = hash_file(path)
+
+    write_metadata_file(path, hash, byte_count)
+
+
+def verify_metadata(
+    local_prefix: Path,
+    local_name: Path,
+    metadata_path: Path,
+    transfer_manifest_path: Path,
 ) -> None:
     entry = read_metadata_file(metadata_path)
 
-    src_fname = entry.name
-    src_hexdigest = entry.digest
-    src_size = entry.size
+    remote_name = entry.name
+    remote_digest = entry.digest
+    remote_size = entry.size
 
-    logging.info("About to verify contents of %s", dest)
+    logging.info("About to verify contents of %s", local_name)
 
-    dest_size = dest.stat().st_size
+    local_size = local_name.stat().st_size
 
-    if src_size != dest_size:
+    if remote_size != local_size:
         raise VerificationFailed(
-            "Copied file size ({} bytes) does not match source file size ({} bytes)".format(
-                dest_size, src_size,
+            "Local file size ({} bytes) does not match remote file size ({} bytes)".format(
+                local_size, remote_size,
             )
         )
 
-    hash_obj, byte_count = hash_file(dest)
+    hasher, byte_count = hash_file(local_name)
 
-    dest_hexdigest = hash_obj.hexdigest()
-    if src_hexdigest != dest_hexdigest:
+    local_digest = hasher.hexdigest()
+    if remote_digest != local_digest:
         raise VerificationFailed(
-            "Destination file {} has digest of {}, which does not match source file {} (digest {})".format(
-                dest, dest_hexdigest, src_fname, src_hexdigest
+            "Local file {} has digest of {}, which does not match remote file {} (digest {})".format(
+                local_name, local_digest, remote_name, remote_digest
             )
         )
 
     logging.info(
-        "File verification successful: Destination (%s) and source (%s) have matching digest (%s)",
-        dest,
-        src_fname,
-        src_hexdigest,
+        "File verification successful: local file (%s) and remote file (%s) have matching digest (%s)",
+        local_name,
+        remote_name,
+        remote_digest,
     )
 
     with transfer_manifest_path.open(mode="a") as f:
         TransferVerified(
-            name=dest.relative_to(dest_prefix),
-            digest=src_hexdigest,
-            size=src_size,
+            name=local_name.relative_to(local_prefix),
+            digest=remote_digest,
+            size=remote_size,
             timestamp=timestamp(),
         ).write_entry_to(f)
 
+        f.flush()
         os.fsync(f.fileno())
 
-    metadata_path.unlink()
-    if metadata_path.suffix == ".metadata":
-        out_file = metadata_path.with_suffix(".out")
-        if out_file.exists():
-            out_file.unlink()
-        err_file = metadata_path.with_suffix(".err")
-        if err_file.exists():
-            err_file.unlink()
+    for path in (
+        metadata_path,
+        metadata_path.with_suffix(".out"),
+        metadata_path.with_suffix(".err"),
+    ):
+        if path.exists():
+            path.unlink()
 
 
 def copy_with_hash(src_path: Path, dest_path: Path) -> Tuple[Any, int]:
@@ -737,15 +837,17 @@ def copy_with_hash(src_path: Path, dest_path: Path) -> Tuple[Any, int]:
     logging.info("There are %.2f MB to copy", size / MB)
     last_log = time.time()
 
-    hash = hashlib.sha1()
+    hasher = make_hasher()
 
-    with src_path.open(mode="rb") as src, tmp_path.open(mode="wb") as dst:
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with src_path.open(mode="rb") as src, tmp_path.open(mode="wb") as dest:
         buf = src.read(MB)
         byte_count = len(buf)
 
         while len(buf) > 0:
-            hash.update(buf)
-            dst.write(buf)
+            hasher.update(buf)
+            dest.write(buf)
 
             buf = src.read(MB)
 
@@ -763,7 +865,8 @@ def copy_with_hash(src_path: Path, dest_path: Path) -> Tuple[Any, int]:
 
         logging.info("Copy complete; about to synchronize file to disk")
 
-        os.fsync(dst.fileno())
+        dest.flush()
+        os.fsync(dest.fileno())
 
         logging.info("File synchronized to disk")
 
@@ -779,7 +882,7 @@ def copy_with_hash(src_path: Path, dest_path: Path) -> Tuple[Any, int]:
 
     logging.info("Renamed {} to {}".format(tmp_path, dest_path))
 
-    return hash, byte_count
+    return hasher, byte_count
 
 
 def hash_file(path: Path) -> Tuple[Any, int]:
@@ -790,15 +893,15 @@ def hash_file(path: Path) -> Tuple[Any, int]:
     logging.info("There are %.2f MB to hash", size / MB)
     last_log = time.time()
 
-    hash = hashlib.sha1()
+    hasher = make_hasher()
 
-    with path.open(mode="rb") as dest_fd:
-        buf = dest_fd.read(MB)
+    with path.open(mode="rb") as f:
+        buf = f.read(MB)
         byte_count = len(buf)
 
         while len(buf) > 0:
-            hash.update(buf)
-            buf = dest_fd.read(MB)
+            hasher.update(buf)
+            buf = f.read(MB)
 
             now = time.time()
             if now - last_log > 5:
@@ -812,17 +915,16 @@ def hash_file(path: Path) -> Tuple[Any, int]:
 
             byte_count += len(buf)
 
-    return hash, byte_count
+    return hasher, byte_count
 
 
 def analyze(transfer_manifest_path: Path) -> None:
     sync_request_start = None
-    sync_request = {"files": {}, "xfer_files": set(), "verified_files": {}}
-    dest_dir = transfer_manifest_path.parent.resolve()
+    sync_request = {"files": {}, "transfer_files": set(), "verified_files": {}}
+    local_dir = transfer_manifest_path.parent.resolve()
     sync_count = 0
 
     for entry, line_number in read_manifest(transfer_manifest_path):
-        # Format: SYNC_REQUEST {} files_at_source={} files_to_transfer={} bytes_to_transfer={} files_to_verify={} bytes_to_verify={} timestamp={}
         if isinstance(entry, SyncRequest):
             sync_count += 1
             # if sync_request_start is not None:
@@ -831,7 +933,6 @@ def analyze(transfer_manifest_path: Path) -> None:
             #    sys.exit(4)
             sync_request_start = line_number
             sync_request.update(entry._info)
-        # Format: TRANSFER_REQUEST fname size
         elif isinstance(entry, (TransferRequest, VerifyRequest)):
             if sync_request_start is None:
                 raise InconsistentManifest(
@@ -850,8 +951,7 @@ def analyze(transfer_manifest_path: Path) -> None:
             sync_request["files"][fname] = size
 
             if isinstance(entry, TransferRequest):
-                sync_request["xfer_files"].add(entry.name)
-        # Format: TRANSFER_VERIFIED relative_fname hexdigest size timestamp:
+                sync_request["transfer_files"].add(entry.name)
         elif isinstance(entry, TransferVerified):
             if sync_request_start is None:
                 raise InconsistentManifest(
@@ -878,7 +978,7 @@ def analyze(transfer_manifest_path: Path) -> None:
                     ),
                 )
 
-            local_size = (dest_dir / fname).stat().st_size
+            local_size = (local_dir / fname).stat().st_size
             if local_size != size:
                 raise InconsistentManifest(
                     "Local size of {} of {} does not match anticipated size {}.".format(
@@ -886,7 +986,7 @@ def analyze(transfer_manifest_path: Path) -> None:
                     )
                 )
 
-            if fname in sync_request["xfer_files"]:
+            if fname in sync_request["transfer_files"]:
                 sync_request["files_to_transfer"] -= 1
                 sync_request["bytes_to_transfer"] -= size
             else:
@@ -916,7 +1016,7 @@ def analyze(transfer_manifest_path: Path) -> None:
                 )
 
             sync_request_start = None
-            sync_request = {"files": {}, "xfer_files": set(), "verified_files": {}}
+            sync_request = {"files": {}, "transfer_files": set(), "verified_files": {}}
 
     if sync_request_start is not None and (
         sync_request["files_to_verify"]
@@ -953,162 +1053,174 @@ def parse_args():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="cmd")
 
-    sync = subparsers.add_parser("sync")
-    sync.add_argument("src", type=Path)
-    sync.add_argument("dest", type=Path)
-    default_working_dir = Path.cwd() / "xfer_working_dir"
+    sync = subparsers.add_parser(Commands.SYNC)
+    sync.add_argument("direction", type=TransferDirection)
+    sync.add_argument("local", type=Path)
+    sync.add_argument("remote", type=Path)
+    default_working_dir = Path.cwd() / "transfer_working_dir"
     sync.add_argument(
         "--working-dir",
         help="Directory to place working HTCondor files.",
         type=Path,
         default=default_working_dir,
-        dest="working_dir",
     )
-    sync.add_argument(
-        "--requirements",
-        help="Submit file requirements (e.g. 'UniqueName == \"MyLab0001\"')",
-    )
-    sync.add_argument(
-        "--requirements_file",
-        help="File containing submit file requirements",
-        type=Path,
-    )
-    sync.add_argument(
-        "--unique-id",
-        help="Do not submit if jobs with UniqueId already found in queue",
-        dest="unique_id",
-    )
+    add_requirements_args(sync)
+    add_unique_id_arg(sync)
     add_test_mode_arg(sync)
 
-    generate = subparsers.add_parser("generate")
-    generate.add_argument("src", type=Path)
-    add_test_mode_arg(generate)
-
-    subdag = subparsers.add_parser("write_subdag")
-    subdag.add_argument("source_prefix", type=Path)
-    subdag.add_argument("source_manifest", type=Path)
-    subdag.add_argument("dest_prefix", type=Path)
-    subdag.add_argument("dest_manifest", type=Path)
-    subdag.add_argument("transfer_manifest", type=Path)
-    subdag.add_argument("--requirements", help="Submit file requirements")
-    subdag.add_argument(
-        "--requirements_file",
-        help="File containing submit file requirements",
-        type=Path,
+    make_remote_file_manifest = subparsers.add_parser(
+        Commands.MAKE_REMOTE_FILE_MANIFEST
     )
-    subdag.add_argument(
-        "--unique-id", help="Set UniqueId in submitted jobs", dest="unique_id"
+    make_remote_file_manifest.add_argument("src", type=Path)
+    add_test_mode_arg(make_remote_file_manifest)
+
+    write_inner_dag = subparsers.add_parser(Commands.WRITE_INNER_DAG)
+    write_inner_dag.add_argument(
+        "direction", type=TransferDirection, choices=list(TransferDirection)
     )
-    add_test_mode_arg(subdag)
+    write_inner_dag.add_argument("remote_prefix", type=Path)
+    write_inner_dag.add_argument("remote_manifest", type=Path)
+    write_inner_dag.add_argument("local_prefix", type=Path)
+    add_requirements_args(write_inner_dag)
+    add_unique_id_arg(write_inner_dag)
+    add_test_mode_arg(write_inner_dag)
 
-    exec = subparsers.add_parser("exec")
-    exec.add_argument("src", type=Path)
+    pull_file = subparsers.add_parser(Commands.PULL_FILE)
+    pull_file.add_argument("src", type=Path)
 
-    verify_remote = subparsers.add_parser("verify_remote")
-    verify_remote.add_argument("src", type=Path)
+    push_file = subparsers.add_parser(Commands.PUSH_FILE)
+    push_file.add_argument("dest", type=Path)
 
-    verify = subparsers.add_parser("verify")
-    # SCRIPT POST xfer_{name} {xfer_py} verify {dest_prefix} {dest} {src_file_noslash}.metadata {transfer_manifest}
-    # verify.add_argument("dest_prefix")
-    # verify.add_argument("dest")
-    # verify.add_argument("metadata")
-    # verify.add_argument("metadata_summary")
-    verify.add_argument("--json", type=Path)
-    verify.add_argument("--fileid")
+    get_remote_metadata = subparsers.add_parser(Commands.GET_REMOTE_METADATA)
+    get_remote_metadata.add_argument("src", type=Path)
 
-    analyze = subparsers.add_parser("analyze")
+    verify_metadata = subparsers.add_parser(Commands.VERIFY_METADATA)
+    verify_metadata.add_argument("--cmd-info", type=Path)
+    verify_metadata.add_argument("--key")
+
+    analyze = subparsers.add_parser(Commands.FINALIZE_TRANSFER_MANIFEST)
     analyze.add_argument("transfer_manifest", type=Path)
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    args.cmd = Commands(args.cmd)
+
+    return args
 
 
-def add_test_mode_arg(parser):
+def add_test_mode_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--test-mode",
         help="Testing mode (only transfers small files)",
         default=False,
         action="store_true",
-        dest="test_mode",
     )
+
+
+def add_requirements_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--requirements",
+        help="Submit file requirements (e.g. 'UniqueName == \"MyLab0001\"')",
+    )
+    parser.add_argument(
+        "--requirements_file",
+        help="File containing submit file requirements",
+        type=Path,
+    )
+
+
+def add_unique_id_arg(parser: argparse.ArgumentParser):
+    parser.add_argument("--unique_id", help="Set UniqueId in submitted jobs")
 
 
 def main():
     args = parse_args()
 
-    print("Called with args: {}".format(args))
+    logging.debug(
+        "{} called with args:\n\t{}".format(
+            sys.argv[0],
+            "\n\t".join("{} = {!r}".format(k, v) for k, v in vars(args).items()),
+        )
+    )
 
-    if args.cmd == "sync":
-        if args.unique_id:
-            schedd = htcondor.Schedd()
-            existing_job = schedd.query(
-                constraint="UniqueId == {} && JobStatus =!= 4".format(
-                    classad.quote(args.unique_id)
-                ),
-                attr_list=[],
-                limit=1,
-            )
-            if len(existing_job) > 0:
-                raise TransferAlreadyRunning(
-                    'Jobs already found in queue with UniqueId == "{}"'.format(
-                        args.unique_id,
-                    )
-                )
-        print(
-            "Will synchronize {} at source to {} at destination".format(
-                args.src, args.dest
-            )
-        )
+    if args.cmd is Commands.SYNC:
+        check_already_running(args.unique_id)
+
         cluster_id = submit_outer_dag(
-            args.working_dir,
-            args.src,
-            args.dest,
+            direction=args.direction,
+            working_dir=args.working_dir,
+            local_dir=args.local,
+            remote_dir=args.remote,
             requirements=read_requirements_file(args.requirements_file)
             or args.requirements,
             unique_id=args.unique_id,
             test_mode=args.test_mode,
         )
-        print("Outer DAG running in cluster {}".format(cluster_id))
-    elif args.cmd == "generate":
-        logging.info("Generating file listing for %s", args.src)
+
+        print("Outer DAG is running in cluster {}".format(cluster_id))
+    elif args.cmd is Commands.MAKE_REMOTE_FILE_MANIFEST:
+        check_running_as_job()
         create_file_manifest(
-            args.src, Path("source_manifest.txt"), test_mode=args.test_mode
+            args.src, Path(REMOTE_MANIFEST_FILE_NAME), test_mode=args.test_mode
         )
-    elif args.cmd == "write_subdag":
-        logging.info(
-            "Generating SUBGDAG for transfer of %s->%s",
-            args.source_prefix,
-            args.dest_prefix,
-        )
+    elif args.cmd is Commands.WRITE_INNER_DAG:
         write_inner_dag(
-            args.source_prefix,
-            args.source_manifest,
-            args.dest_prefix,
+            direction=args.direction,
+            remote_prefix=args.remote_prefix,
+            remote_manifest=args.remote_manifest,
+            local_prefix=args.local_prefix,
             requirements=read_requirements_file(args.requirements_file)
             or args.requirements,
             test_mode=args.test_mode,
             unique_id=args.unique_id,
         )
-    elif args.cmd == "exec":
-        xfer_exec(args.src)
-    elif args.cmd == "verify":
-        cmd_info = load_json(args.json)
-        # Split the DAG job name to get the cmd_info key
-        info = cmd_info[args.fileid.split(":")[-1]]
-        verify(
-            Path(info["dest_prefix"]),
-            Path(info["dest"]),
-            Path("{}.metadata".format(info["src_file_noslash"])),
-            Path(info["transfer_manifest"]),
+    elif args.cmd is Commands.PULL_FILE:
+        check_running_as_job()
+        pull_file(path=args.src)
+    elif args.cmd is Commands.PUSH_FILE:
+        check_running_as_job()
+        push_file(path=args.dest)
+    elif args.cmd is Commands.GET_REMOTE_METADATA:
+        check_running_as_job()
+        get_remote_metadata(path=args.src)
+    elif args.cmd is Commands.VERIFY_METADATA:
+        cmd_info_path = load_json(args.cmd_info)
+        # Split the DAG job name (which is passed as fileid) to get the cmd_info key
+        info = cmd_info_path[args.key.split(":")[-1]]
+        verify_metadata(
+            local_prefix=Path(info["local_prefix"]),
+            local_name=Path(info["local_file"]),
+            metadata_path=Path("{}.metadata".format(info["flattened_name"])),
+            transfer_manifest_path=Path(info["transfer_manifest"]),
         )
-    elif args.cmd == "verify_remote":
-        verify_remote(args.src)
-    elif args.cmd == "analyze":
+    elif args.cmd is Commands.FINALIZE_TRANSFER_MANIFEST:
         analyze(args.transfer_manifest)
+
+
+def check_already_running(unique_id: Optional[str]) -> None:
+    if not unique_id:
+        return
+
+    schedd = htcondor.Schedd()
+    existing_job = schedd.query(
+        constraint="UniqueId == {} && JobStatus =!= 4".format(classad.quote(unique_id)),
+        attr_list=[],
+        limit=1,
+    )
+    if len(existing_job) > 0:
+        raise TransferAlreadyRunning(
+            'Jobs already found in queue with UniqueId == "{}"'.format(unique_id,)
+        )
+
+
+def check_running_as_job() -> None:
+    if "_CONDOR_JOB_AD" not in os.environ:
+        raise NotACondorJob("This step must be run as an HTCondor job.")
 
 
 if __name__ == "__main__":
     try:
-        logging.basicConfig(format="%(asctime)s ~ %(message)s", level=logging.INFO)
+        logging.basicConfig(format="%(asctime)s ~ %(message)s", level=logging.DEBUG)
         main()
     except Exception as e:
         logging.exception("Error: {}".format(e))
