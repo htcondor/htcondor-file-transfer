@@ -10,29 +10,18 @@ import argparse
 import contextlib
 import enum
 import hashlib
+import json
 import logging
 import os
+import re
 import shutil
 import sys
-import re
-import json
 import time
 from pathlib import Path
-from typing import (
-    Optional,
-    Mapping,
-    Dict,
-    List,
-    Any,
-    Tuple,
-    Iterator,
-    Iterable,
-    Type,
-    TypeVar,
-)
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple, Type, TypeVar
 
-import htcondor
 import classad
+import htcondor
 
 T_JSON = Dict[str, Any]
 T_CMD_INFO = List[Mapping[str, Path]]
@@ -140,20 +129,33 @@ class ManifestEntry(metaclass=abc.ABCMeta):
     def __init__(self, **info):
         expected_keys = set(self.keys)
 
-        if info.keys() < expected_keys:
+        given_keys = set(info.keys())
+
+        if given_keys < expected_keys:
             raise InvalidManifestEntry(
                 "Info {} for {} is missing keys: {}".format(
-                    info, type(self).__name__, expected_keys - info.keys()
+                    info, type(self).__name__, expected_keys - given_keys
                 )
             )
-        if info.keys() > expected_keys:
+        if given_keys > expected_keys:
             logging.warning(
                 "Info {} for {} has extra keys: {}".format(
-                    info, type(self).__name__, info.keys() - expected_keys
+                    info, type(self).__name__, given_keys - expected_keys
                 )
             )
 
         self._info = {k: info[k] for k in self.keys}
+
+    def __eq__(self, other):
+        if not isinstance(other, type(self)):
+            return NotImplemented
+
+        return self._info == other._info
+
+    def __repr__(self):
+        return "{}({})".format(
+            type(self).__name__, ", ".join("{} = {!r}".format(k, v) for k, v in self._info.items())
+        )
 
     def __str__(self):
         return "{} {}".format(self.type, json.dumps(self.to_json()))
@@ -178,15 +180,25 @@ class ManifestEntry(metaclass=abc.ABCMeta):
 
 
 class Name(ManifestEntry, metaclass=abc.ABCMeta):
+    def __init__(self, **info):
+        super().__init__(**info)
+
+        self._info["name"] = Path(self._info["name"])
+
     @property
     def name(self):
-        return Path(self._info["name"])
+        return self._info["name"]
 
 
 class Size(ManifestEntry, metaclass=abc.ABCMeta):
+    def __init__(self, **info):
+        super().__init__(**info)
+
+        self._info["size"] = int(self._info["size"])
+
     @property
     def size(self):
-        return int(self._info["size"])
+        return self._info["size"]
 
 
 class Digest(Name, Size, metaclass=abc.ABCMeta):
@@ -196,9 +208,14 @@ class Digest(Name, Size, metaclass=abc.ABCMeta):
 
 
 class Timestamp(ManifestEntry, metaclass=abc.ABCMeta):
+    def __init__(self, **info):
+        super().__init__(**info)
+
+        self._info["timestamp"] = float(self._info["timestamp"])
+
     @property
     def timestamp(self):
-        return float(self._info["timestamp"])
+        return self._info["timestamp"]
 
 
 class TransferRequest(Name, Size):
@@ -224,6 +241,11 @@ class SyncRequest(Timestamp):
         "bytes_to_verify",
         "timestamp",
     )
+
+    def __init__(self, **info):
+        super().__init__(**info)
+
+        self._info["remote_prefix"] = Path(self._info["remote_prefix"])
 
 
 class SyncDone(Timestamp):
@@ -261,9 +283,7 @@ def read_manifest(path: Path) -> Iterator[Tuple[ManifestEntry, int]]:
                 yield parse_manifest_entry(line), line_number
             except Exception:
                 logging.exception(
-                    'Failed to parse manifest entry at {}:{} ("{}")'.format(
-                        path, line_number, line
-                    )
+                    'Failed to parse manifest entry at {}:{} ("{}")'.format(path, line_number, line)
                 )
                 raise
 
@@ -278,9 +298,7 @@ def parse_manifest_entry(entry: str) -> ManifestEntry:
     return cls(**info)
 
 
-def create_file_manifest(
-    root_path: Path, manifest_path: Path, test_mode: bool = False
-) -> None:
+def create_file_manifest(root_path: Path, manifest_path: Path, test_mode: bool = False) -> None:
     logging.info("Generating file listing for %s", root_path)
 
     with manifest_path.open(mode="w") as f:
@@ -348,9 +366,7 @@ T = TypeVar("T", bound=ManifestEntry)
 def check_entry_type(entry: ManifestEntry, expected_type: Type[T]) -> T:
     if not isinstance(entry, expected_type):
         raise InvalidManifestEntry(
-            "Expected a {}, but got a {}".format(
-                expected_type.__name__, type(entry).__name__
-            )
+            "Expected a {}, but got a {}".format(expected_type.__name__, type(entry).__name__)
         )
 
     return entry
@@ -378,9 +394,7 @@ def shared_submit_descriptors(unique_id=None, requirements=None):
         "requirements": requirements if requirements is not None else "true",
         "My.Is_Transfer_Job": "true",
         "My.WantFlocking": "true",  # special attribute for the CHTC pool, not necessary at other sites
-        "My.UniqueID": "{}".format(
-            classad.quote(unique_id) if unique_id is not None else ""
-        ),
+        "My.UniqueID": "{}".format(classad.quote(unique_id) if unique_id is not None else ""),
     }
 
 
@@ -418,9 +432,7 @@ def submit_outer_dag(
     if requirements:
         write_requirements_file(working_dir, requirements)
 
-    outer_dag_file = dags.write_dag(
-        outer_dag, dag_dir=working_dir, dag_file_name=OUTER_DAG_NAME
-    )
+    outer_dag_file = dags.write_dag(outer_dag, dag_dir=working_dir, dag_file_name=OUTER_DAG_NAME)
 
     sub = htcondor.Submit.from_dag(str(outer_dag_file), DAG_ARGS)
 
@@ -611,9 +623,7 @@ def make_inner_dag(
     # Only import htcondor.dags submit-side
     import htcondor.dags as dags
 
-    inner_dag = dags.DAG(
-        max_jobs_by_category={"TRANSFER_JOBS": 1} if test_mode else None
-    )
+    inner_dag = dags.DAG(max_jobs_by_category={"TRANSFER_JOBS": 1} if test_mode else None)
 
     tof = [METADATA_FILE_NAME]
     tor = {METADATA_FILE_NAME: "$(flattened_name).metadata"}
@@ -643,10 +653,7 @@ def make_inner_dag(
                 "transfer_output_remaps": classad.quote(
                     " ; ".join(
                         "{} = {}".format(k, v)
-                        for k, v in {
-                            **tor,
-                            **(pull_tor if TransferDirection.PULL else {}),
-                        }.items()
+                        for k, v in {**tor, **(pull_tor if TransferDirection.PULL else {}),}.items()
                     )
                 ),
                 **shared_descriptors,
@@ -769,10 +776,7 @@ def get_remote_metadata(path: Path) -> None:
 
 
 def verify_metadata(
-    local_prefix: Path,
-    local_name: Path,
-    metadata_path: Path,
-    transfer_manifest_path: Path,
+    local_prefix: Path, local_name: Path, metadata_path: Path, transfer_manifest_path: Path,
 ) -> None:
     entry = read_metadata_file(metadata_path)
 
@@ -967,9 +971,7 @@ def analyze(transfer_manifest_path: Path) -> None:
                 continue
 
             if fname not in sync_request["files"]:
-                raise InconsistentManifest(
-                    "File {} verified but was not requested.".format(fname)
-                )
+                raise InconsistentManifest("File {} verified but was not requested.".format(fname))
 
             if sync_request["files"][fname] != size:
                 raise InconsistentManifest(
@@ -1068,9 +1070,7 @@ def parse_args():
     add_unique_id_arg(sync)
     add_test_mode_arg(sync)
 
-    make_remote_file_manifest = subparsers.add_parser(
-        Commands.MAKE_REMOTE_FILE_MANIFEST
-    )
+    make_remote_file_manifest = subparsers.add_parser(Commands.MAKE_REMOTE_FILE_MANIFEST)
     make_remote_file_manifest.add_argument("src", type=Path)
     add_test_mode_arg(make_remote_file_manifest)
 
@@ -1119,13 +1119,10 @@ def add_test_mode_arg(parser: argparse.ArgumentParser) -> None:
 
 def add_requirements_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--requirements",
-        help="Submit file requirements (e.g. 'UniqueName == \"MyLab0001\"')",
+        "--requirements", help="Submit file requirements (e.g. 'UniqueName == \"MyLab0001\"')",
     )
     parser.add_argument(
-        "--requirements_file",
-        help="File containing submit file requirements",
-        type=Path,
+        "--requirements_file", help="File containing submit file requirements", type=Path,
     )
 
 
@@ -1138,8 +1135,7 @@ def main():
 
     logging.debug(
         "{} called with args:\n\t{}".format(
-            sys.argv[0],
-            "\n\t".join("{} = {!r}".format(k, v) for k, v in vars(args).items()),
+            sys.argv[0], "\n\t".join("{} = {!r}".format(k, v) for k, v in vars(args).items()),
         )
     )
 
@@ -1151,8 +1147,7 @@ def main():
             working_dir=args.working_dir,
             local_dir=args.local,
             remote_dir=args.remote,
-            requirements=read_requirements_file(args.requirements_file)
-            or args.requirements,
+            requirements=read_requirements_file(args.requirements_file) or args.requirements,
             unique_id=args.unique_id,
             test_mode=args.test_mode,
         )
@@ -1160,17 +1155,14 @@ def main():
         print("Outer DAG is running in cluster {}".format(cluster_id))
     elif args.cmd is Commands.MAKE_REMOTE_FILE_MANIFEST:
         check_running_as_job()
-        create_file_manifest(
-            args.src, Path(REMOTE_MANIFEST_FILE_NAME), test_mode=args.test_mode
-        )
+        create_file_manifest(args.src, Path(REMOTE_MANIFEST_FILE_NAME), test_mode=args.test_mode)
     elif args.cmd is Commands.WRITE_INNER_DAG:
         write_inner_dag(
             direction=args.direction,
             remote_prefix=args.remote_prefix,
             remote_manifest=args.remote_manifest,
             local_prefix=args.local_prefix,
-            requirements=read_requirements_file(args.requirements_file)
-            or args.requirements,
+            requirements=read_requirements_file(args.requirements_file) or args.requirements,
             test_mode=args.test_mode,
             unique_id=args.unique_id,
         )
