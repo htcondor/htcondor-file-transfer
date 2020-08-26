@@ -386,15 +386,22 @@ def make_hasher():
     return hashlib.sha1()
 
 
-def shared_submit_descriptors(unique_id=None, requirements=None):
+def shared_submit_descriptors(
+    executable: Optional[Path] = None,
+    unique_id: Optional[str] = None,
+    requirements: Optional[str] = None,
+) -> Dict[str, str]:
+    if executable is None:
+        executable = THIS_FILE
+
     return {
-        "executable": THIS_FILE.as_posix(),
+        "executable": executable.as_posix(),
         "keep_claim_idle": "300",
         "request_disk": "1GB",
-        "requirements": requirements if requirements is not None else "true",
+        "requirements": requirements or "true",
         "My.Is_Transfer_Job": "true",
         "My.WantFlocking": "true",  # special attribute for the CHTC pool, not necessary at other sites
-        "My.UniqueID": "{}".format(classad.quote(unique_id) if unique_id is not None else ""),
+        "My.UniqueID": classad.quote(unique_id) if unique_id else "",
     }
 
 
@@ -416,21 +423,15 @@ def submit_outer_dag(
     working_dir.mkdir(parents=True, exist_ok=True)
     local_dir.mkdir(parents=True, exist_ok=True)
 
-    transfer_manifest_path = local_dir / TRANSFER_MANIFEST_FILE_NAME
-
     outer_dag = make_outer_dag(
         direction=direction,
         local_dir=local_dir,
         remote_dir=remote_dir,
-        transfer_manifest_path=transfer_manifest_path,
         working_dir=working_dir,
         requirements=requirements,
         unique_id=unique_id,
         test_mode=test_mode,
     )
-
-    if requirements:
-        write_requirements_file(working_dir, requirements)
 
     outer_dag_file = dags.write_dag(outer_dag, dag_dir=working_dir, dag_file_name=OUTER_DAG_NAME)
 
@@ -446,7 +447,6 @@ def make_outer_dag(
     direction: TransferDirection,
     local_dir: Path,
     remote_dir: Path,
-    transfer_manifest_path: Path,
     working_dir: Path,
     requirements: Optional[str],
     unique_id: Optional[str],
@@ -456,6 +456,15 @@ def make_outer_dag(
     import htcondor.dags as dags
 
     outer_dag = dags.DAG()
+
+    transfer_manifest_path = local_dir / TRANSFER_MANIFEST_FILE_NAME
+
+    if requirements:
+        write_requirements_file(working_dir, requirements)
+
+    # copy this script into the working dir for all further use
+    executable = working_dir / THIS_FILE.name
+    shutil.copy2(str(THIS_FILE), str(executable))
 
     outer_dag.layer(
         name="make_remote_file_manifest",
@@ -470,11 +479,13 @@ def make_outer_dag(
                     "--test-mode" if test_mode else "",
                 ),
                 "should_transfer_files": "yes",
-                **shared_submit_descriptors(unique_id, requirements),
+                **shared_submit_descriptors(
+                    executable=executable, unique_id=unique_id, requirements=requirements,
+                ),
             }
         ),
         post=dags.Script(
-            executable=THIS_FILE,
+            executable=executable,
             arguments=[
                 Commands.WRITE_INNER_DAG,
                 direction,
@@ -492,7 +503,7 @@ def make_outer_dag(
         name="inner",
         dag_file=working_dir / INNER_DAG_NAME,
         post=dags.Script(
-            executable=THIS_FILE,
+            executable=executable,
             arguments=[Commands.FINALIZE_TRANSFER_MANIFEST, transfer_manifest_path],
         ),
     )
