@@ -939,6 +939,7 @@ def analyze(transfer_manifest_path: Path) -> None:
     sync_request = {"files": {}, "transfer_files": set(), "verified_files": {}}
     local_dir = transfer_manifest_path.parent.resolve()
     sync_count = 0
+    mismatched_filesizes = {}
 
     for entry, line_number in read_manifest(transfer_manifest_path):
         if isinstance(entry, SyncRequest):
@@ -994,11 +995,13 @@ def analyze(transfer_manifest_path: Path) -> None:
 
             local_size = (local_dir / fname).stat().st_size
             if local_size != size:
-                raise InconsistentManifest(
-                    "Local size of {} of {} does not match anticipated size {}.".format(
-                        local_size, fname, size,
-                    )
-                )
+                mismatched_filesizes[fname] = {
+                    "expected": size,
+                    "got": local_size,
+                    "line_number": line_number,
+                }
+            else:
+                mismatched_filesizes.pop(fname, None)
 
             if fname in sync_request["transfer_files"]:
                 sync_request["files_to_transfer"] -= 1
@@ -1031,6 +1034,19 @@ def analyze(transfer_manifest_path: Path) -> None:
 
             sync_request_start = None
             sync_request = {"files": {}, "transfer_files": set(), "verified_files": {}}
+
+    if len(mismatched_filesizes) > 0:
+        for fname, size in mismatched_filesizes.items():
+            logging.error(
+                "- Mismatched file size for %s (line %d): expected %d, got %d on disk",
+                fname,
+                size["line_number"],
+                size["expected"],
+                size["got"],
+            )
+        raise InconsistentManifest(
+            "Local sizes of {} files did match anticipated sizes.".format(len(mismatched_filesizes))
+        )
 
     if sync_request_start is not None and (
         sync_request["files_to_verify"]
