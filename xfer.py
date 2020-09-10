@@ -642,7 +642,7 @@ def make_inner_dag(
     pull_tof = [SANDBOX_FILE_NAME]
     pull_tor = {SANDBOX_FILE_NAME: "$(local_file)"}
 
-    shared_descriptors = shared_submit_descriptors(unique_id, requirements)
+    shared_descriptors = shared_submit_descriptors(unique_id=unique_id, requirements=requirements)
 
     inner_dag.layer(
         name=direction,
