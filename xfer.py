@@ -88,7 +88,7 @@ class Commands(StrEnum):
     PULL_FILE = "pull_file"
     PUSH_FILE = "push_file"
     GET_REMOTE_METADATA = "get_remote_metadata"
-    VERIFY_METADATA = "verify_metadata"
+    POST_TRANSFER = "post_transfer"
     FINALIZE_TRANSFER_MANIFEST = "finalize_transfer_manifest"
 
 
@@ -226,7 +226,7 @@ class VerifyRequest(Name, Size):
     keys = ("name", "size")
 
 
-class TransferVerified(Digest, Timestamp):
+class TransferComplete(Digest, Timestamp):
     keys = ("name", "size", "digest", "timestamp")
 
 
@@ -559,7 +559,7 @@ def write_inner_dag(
     # Check for files that we have already verified, and do not verify them again.
     files_verified = set()
     for entry, _ in read_manifest(transfer_manifest_path):
-        if not isinstance(entry, TransferVerified):
+        if not isinstance(entry, TransferComplete):
             continue
 
         files_verified.add(entry.name)
@@ -579,10 +579,10 @@ def write_inner_dag(
         ensure_local_dirs_exist(local_prefix, files_to_transfer)
 
     transfer_cmd_info = make_cmd_info(
-        files_to_transfer, remote_prefix, local_prefix, transfer_manifest_path
+        direction, files_to_transfer, remote_prefix, local_prefix, transfer_manifest_path
     )
     verify_cmd_info = make_cmd_info(
-        files_to_verify, remote_prefix, local_prefix, transfer_manifest_path
+        direction, files_to_verify, remote_prefix, local_prefix, transfer_manifest_path
     )
 
     write_cmd_info(transfer_cmd_info, Path(TRANSFER_COMMANDS_FILE_NAME))
@@ -640,7 +640,7 @@ def make_inner_dag(
     tor = {METADATA_FILE_NAME: "$(flattened_name).metadata"}
 
     pull_tof = [SANDBOX_FILE_NAME]
-    pull_tor = {SANDBOX_FILE_NAME: "$(local_file)"}
+    pull_tor = {SANDBOX_FILE_NAME: "$(flattened_name)"}
 
     shared_descriptors = shared_submit_descriptors(unique_id=unique_id, requirements=requirements)
 
@@ -674,7 +674,7 @@ def make_inner_dag(
         post=dags.Script(
             executable=THIS_FILE,
             arguments=[
-                Commands.VERIFY_METADATA,
+                Commands.POST_TRANSFER,
                 "--cmd-info",
                 TRANSFER_COMMANDS_FILE_NAME,
                 "--key",
@@ -705,7 +705,7 @@ def make_inner_dag(
         post=dags.Script(
             executable=THIS_FILE,
             arguments=[
-                Commands.VERIFY_METADATA,
+                Commands.POST_TRANSFER,
                 "--cmd-info",
                 VERIFY_COMMANDS_FILE_NAME,
                 "--key",
@@ -732,7 +732,9 @@ def ensure_local_dirs_exist(prefix: Path, relative_paths: Iterable[Path]) -> Non
         d.mkdir(exist_ok=True, parents=True)
 
 
-def make_cmd_info(files, remote_prefix, local_prefix, transfer_manifest_path):
+def make_cmd_info(
+    direction: TransferDirection, files, remote_prefix, local_prefix, transfer_manifest_path
+):
     cmd_info = []
 
     for fname in files:
@@ -741,6 +743,7 @@ def make_cmd_info(files, remote_prefix, local_prefix, transfer_manifest_path):
         flattened_name = flatten_path(fname)
 
         info = {
+            "direction": direction,
             "remote_file": remote_file,
             "local_file": local_file,
             "local_prefix": local_prefix,
@@ -757,6 +760,7 @@ def write_cmd_info(cmd_info: T_CMD_INFO, path: Path) -> None:
 
 
 def flatten_path(path: Path) -> str:
+    # TODO: this doesn't make sense on Windows
     return str(path).replace("/", "_SLASH_").replace(" ", "_SPACE_")
 
 
@@ -786,45 +790,41 @@ def get_remote_metadata(path: Path) -> None:
     write_metadata_file(path, hash, byte_count)
 
 
-def verify_metadata(
-    local_prefix: Path, local_name: Path, metadata_path: Path, transfer_manifest_path: Path,
+def post_transfer(
+    direction: TransferDirection,
+    local_prefix: Path,
+    local_name: Path,
+    flattened_name: Path,
+    metadata_path: Path,
+    transfer_manifest_path: Path,
 ) -> None:
+    logging.info("Running post transfer for %s", local_name)
+
     entry = read_metadata_file(metadata_path)
 
     remote_name = entry.name
     remote_digest = entry.digest
     remote_size = entry.size
 
-    logging.info("About to verify contents of %s", local_name)
+    if direction is TransferDirection.PULL:
+        local_target = flattened_name
+    else:
+        local_target = local_name
+    verify_metadata(local_target, remote_digest, remote_name, remote_size)
 
-    local_size = local_name.stat().st_size
-
-    if remote_size != local_size:
-        raise VerificationFailed(
-            "Local file size ({} bytes) does not match remote file size ({} bytes)".format(
-                local_size, remote_size,
-            )
+    if direction is TransferDirection.PULL:
+        logging.info(
+            "This is a %s, renaming scratch file %s -> %s", direction, flattened_name, local_name
         )
-
-    hasher, byte_count = hash_file(local_name)
-
-    local_digest = hasher.hexdigest()
-    if remote_digest != local_digest:
-        raise VerificationFailed(
-            "Local file {} has digest of {}, which does not match remote file {} (digest {})".format(
-                local_name, local_digest, remote_name, remote_digest
-            )
-        )
-
-    logging.info(
-        "File verification successful: local file (%s) and remote file (%s) have matching digest (%s)",
-        local_name,
-        remote_name,
-        remote_digest,
-    )
+        if flattened_name.stat().st_dev == local_name.parent.stat().st_dev:
+            flattened_name.rename(local_name)
+        else:
+            shutil.copy2(str(flattened_name), str(local_name))
+            verify_metadata(local_name, remote_digest, remote_name, remote_size)
+            flattened_name.unlink()
 
     with transfer_manifest_path.open(mode="a") as f:
-        TransferVerified(
+        TransferComplete(
             name=local_name.relative_to(local_prefix),
             digest=remote_digest,
             size=remote_size,
@@ -838,9 +838,36 @@ def verify_metadata(
         metadata_path,
         metadata_path.with_suffix(".out"),
         metadata_path.with_suffix(".err"),
+        flattened_name,
     ):
         if path.exists():
             path.unlink()
+
+
+def verify_metadata(local_path: Path, remote_digest, remote_path: Path, remote_size: int):
+    local_size = local_path.stat().st_size
+    if remote_size != local_size:
+        raise VerificationFailed(
+            "Local file size ({} bytes) does not match remote file size ({} bytes)".format(
+                local_size, remote_size,
+            )
+        )
+
+    hasher, byte_count = hash_file(local_path)
+    local_digest = hasher.hexdigest()
+    if remote_digest != local_digest:
+        raise VerificationFailed(
+            "Local file {} has digest of {}, which does not match remote file {} (digest {})".format(
+                local_path, local_digest, remote_path, remote_digest
+            )
+        )
+
+    logging.info(
+        "File verification successful: local file (%s) and remote file (%s) have matching digest (%s)",
+        local_path,
+        remote_path,
+        remote_digest,
+    )
 
 
 def copy_with_hash(src_path: Path, dest_path: Path) -> Tuple[Any, int]:
@@ -969,7 +996,7 @@ def analyze(transfer_manifest_path: Path) -> None:
 
             if isinstance(entry, TransferRequest):
                 sync_request["transfer_files"].add(entry.name)
-        elif isinstance(entry, TransferVerified):
+        elif isinstance(entry, TransferComplete):
             if sync_request_start is None:
                 raise InconsistentManifest(
                     "Transfer verification found at line {} before sync started; inconsistent log".format(
@@ -1122,9 +1149,9 @@ def parse_args():
     get_remote_metadata = subparsers.add_parser(Commands.GET_REMOTE_METADATA)
     get_remote_metadata.add_argument("src", type=Path)
 
-    verify_metadata = subparsers.add_parser(Commands.VERIFY_METADATA)
-    verify_metadata.add_argument("--cmd-info", type=Path)
-    verify_metadata.add_argument("--key")
+    post_transfer = subparsers.add_parser(Commands.POST_TRANSFER)
+    post_transfer.add_argument("--cmd-info", type=Path)
+    post_transfer.add_argument("--key")
 
     analyze = subparsers.add_parser(Commands.FINALIZE_TRANSFER_MANIFEST)
     analyze.add_argument("transfer_manifest", type=Path)
@@ -1203,14 +1230,16 @@ def main():
     elif args.cmd is Commands.GET_REMOTE_METADATA:
         check_running_as_job()
         get_remote_metadata(path=args.src)
-    elif args.cmd is Commands.VERIFY_METADATA:
+    elif args.cmd is Commands.POST_TRANSFER:
         cmd_info_path = load_json(args.cmd_info)
         # Split the DAG job name (which is passed as fileid) to get the cmd_info key
         info = cmd_info_path[args.key.split(":")[-1]]
-        verify_metadata(
+        post_transfer(
+            direction=TransferDirection(info["direction"]),
             local_prefix=Path(info["local_prefix"]),
-            local_name=Path(info["local_file"]),
-            metadata_path=Path("{}.metadata".format(info["flattened_name"])),
+            local_name=Path(info["local_file"]).resolve(),
+            flattened_name=Path(info["flattened_name"]).resolve(),
+            metadata_path=Path("{}.metadata".format(info["flattened_name"])).resolve(),
             transfer_manifest_path=Path(info["transfer_manifest"]),
         )
     elif args.cmd is Commands.FINALIZE_TRANSFER_MANIFEST:
