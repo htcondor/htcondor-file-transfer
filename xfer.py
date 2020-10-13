@@ -544,7 +544,10 @@ def write_inner_dag(
     transfer_manifest_path.touch(exist_ok=True)
 
     # Never transfer the transfer manifest
-    local_files.pop(transfer_manifest_path.relative_to(local_prefix), None)
+    transfer_manifest_file = transfer_manifest_path.relative_to(local_prefix)
+
+    local_files.pop(transfer_manifest_file, None)
+    remote_files.pop(transfer_manifest_file, None)
 
     if direction is TransferDirection.PULL:
         src_files, dest_files = remote_files, local_files
