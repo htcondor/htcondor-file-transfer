@@ -710,6 +710,7 @@ def make_inner_dag(
                 VERIFY_COMMANDS_FILE_NAME,
                 "--key",
                 "$JOB",
+                "--only-verify",
             ],
         ),
     )
@@ -797,6 +798,7 @@ def post_transfer(
     flattened_name: Path,
     metadata_path: Path,
     transfer_manifest_path: Path,
+    only_verify: bool,
 ) -> None:
     logging.info("Running post transfer for %s", local_name)
 
@@ -806,13 +808,13 @@ def post_transfer(
     remote_digest = entry.digest
     remote_size = entry.size
 
-    if direction is TransferDirection.PULL:
+    if direction is TransferDirection.PULL and not only_verify:
         local_target = flattened_name
     else:
         local_target = local_name
     verify_metadata(local_target, remote_digest, remote_name, remote_size)
 
-    if direction is TransferDirection.PULL:
+    if direction is TransferDirection.PULL and not only_verify:
         logging.info(
             "This is a %s, renaming scratch file %s -> %s", direction, flattened_name, local_name
         )
@@ -1152,6 +1154,7 @@ def parse_args():
     post_transfer = subparsers.add_parser(Commands.POST_TRANSFER)
     post_transfer.add_argument("--cmd-info", type=Path)
     post_transfer.add_argument("--key")
+    post_transfer.add_argument("--only-verify", action="store_true")
 
     analyze = subparsers.add_parser(Commands.FINALIZE_TRANSFER_MANIFEST)
     analyze.add_argument("transfer_manifest", type=Path)
@@ -1241,6 +1244,7 @@ def main():
             flattened_name=Path(info["flattened_name"]).resolve(),
             metadata_path=Path("{}.metadata".format(info["flattened_name"])).resolve(),
             transfer_manifest_path=Path(info["transfer_manifest"]),
+            only_verify=args.only_verify,
         )
     elif args.cmd is Commands.FINALIZE_TRANSFER_MANIFEST:
         analyze(args.transfer_manifest)
