@@ -44,7 +44,7 @@ VERIFY_COMMANDS_FILE_NAME = "verify_commands.json"
 
 OUTER_DAG_NAME = "outer.dag"
 INNER_DAG_NAME = "inner.dag"
-DAG_ARGS = {"force": 1}
+DAG_ARGS = {"force": True}
 
 THIS_FILE = Path(__file__).resolve()
 
