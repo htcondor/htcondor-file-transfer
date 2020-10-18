@@ -764,8 +764,13 @@ def write_cmd_info(cmd_info: T_CMD_INFO, path: Path) -> None:
 
 
 def flatten_path(path: Path) -> str:
-    # TODO: this doesn't make sense on Windows
-    return str(path).replace("/", "_SLASH_").replace(" ", "_SPACE_")
+    # Generate a unique file name (technically, unique up to hash
+    # collisions) that will sort last alphabetically in the working
+    # directory.
+
+    digest = hashlib.sha1(bytes(str(path), "utf-8")).hexdigest()
+    suffix = path.suffix[:10]
+    return f"zz_transferred_file_{digest}{suffix}"
 
 
 def path_values_to_strings(mapping):
