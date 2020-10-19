@@ -770,7 +770,7 @@ def flatten_path(path: Path) -> str:
 
     digest = hashlib.sha1(bytes(str(path), "utf-8")).hexdigest()
     suffix = path.suffix[:10]
-    return f"zz_transferred_file_{digest}{suffix}"
+    return "zz_transferred_file_{}{}".format(digest, suffix)
 
 
 def path_values_to_strings(mapping):
