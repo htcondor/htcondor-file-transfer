@@ -406,7 +406,7 @@ def shared_submit_descriptors(
     }
 
     if annex_name:
-        descriptors["My.TargetAnnexName"] = annex_name
+        descriptors["My.TargetAnnexName"] = classad.quote(annex_name)
 
     return descriptors
 
