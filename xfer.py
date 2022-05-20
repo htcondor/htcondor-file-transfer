@@ -26,10 +26,10 @@ import htcondor
 T_JSON = Dict[str, Any]
 T_CMD_INFO = List[Mapping[str, Path]]
 
-KB = 2 ** 10
-MB = 2 ** 20
-GB = 2 ** 30
-TB = 2 ** 40
+KB = 2**10
+MB = 2**20
+GB = 2**30
+TB = 2**40
 
 METADATA_FILE_SIZE_LIMIT = 16 * KB
 
@@ -390,11 +390,12 @@ def shared_submit_descriptors(
     executable: Optional[Path] = None,
     unique_id: Optional[str] = None,
     requirements: Optional[str] = None,
+    annex_name: Optional[str] = None,
 ) -> Dict[str, str]:
     if executable is None:
         executable = THIS_FILE
 
-    return {
+    descriptors = {
         "executable": executable.as_posix(),
         "keep_claim_idle": "300",
         "request_disk": "1GB",
@@ -403,6 +404,11 @@ def shared_submit_descriptors(
         "My.WantFlocking": "true",  # special attribute for the CHTC pool, not necessary at other sites
         "My.UniqueID": classad.quote(unique_id) if unique_id else "",
     }
+
+    if annex_name:
+        descriptors["My.TargetAnnexName"] = annex_name
+
+    return descriptors
 
 
 def submit_outer_dag(
@@ -413,6 +419,7 @@ def submit_outer_dag(
     requirements: Optional[str] = None,
     unique_id: Optional[str] = None,
     test_mode: bool = False,
+    annex_name: Optional[str] = None,
 ) -> int:
     # Only import htcondor.dags submit-side
     import htcondor.dags as dags
@@ -431,6 +438,7 @@ def submit_outer_dag(
         requirements=requirements,
         unique_id=unique_id,
         test_mode=test_mode,
+        annex_name=annex_name,
     )
 
     outer_dag_file = dags.write_dag(outer_dag, dag_dir=working_dir, dag_file_name=OUTER_DAG_NAME)
@@ -451,6 +459,7 @@ def make_outer_dag(
     requirements: Optional[str],
     unique_id: Optional[str],
     test_mode: bool,
+    annex_name: Optional[str],
 ):
     # Only import htcondor.dags submit-side
     import htcondor.dags as dags
@@ -480,7 +489,10 @@ def make_outer_dag(
                 ),
                 "should_transfer_files": "yes",
                 **shared_submit_descriptors(
-                    executable=executable, unique_id=unique_id, requirements=requirements,
+                    executable=executable,
+                    unique_id=unique_id,
+                    requirements=requirements,
+                    annex_name=annex_name,
                 ),
             }
         ),
@@ -497,6 +509,7 @@ def make_outer_dag(
                 else "",
                 "--unique_id={}".format(unique_id) if unique_id is not None else "",
                 "--test-mode" if test_mode else "",
+                "--annex-name={}".format(annex_name) if annex_name is not None else "",
             ],
         ),
     ).child_subdag(
@@ -521,13 +534,12 @@ def write_inner_dag(
     requirements=None,
     test_mode: bool = False,
     unique_id=None,
+    annex_name: Optional[str] = None,
 ):
     # Only import htcondor.dags submit-side
     import htcondor.dags as dags
 
-    logging.info(
-        "Generating SUBGDAG for transfer of %s->%s", remote_prefix, local_prefix,
-    )
+    logging.info("Generating SUBGDAG for transfer of %s->%s", remote_prefix, local_prefix)
 
     logging.info("Parsing remote file manifest...")
 
@@ -599,6 +611,7 @@ def write_inner_dag(
             verify_cmd_info=verify_cmd_info,
             unique_id=unique_id,
             test_mode=test_mode,
+            annex_name=annex_name,
         ),
         dag_dir=Path.cwd(),  # this will be the working dir of the outer DAG
         dag_file_name=INNER_DAG_NAME,
@@ -633,6 +646,7 @@ def make_inner_dag(
     verify_cmd_info: T_CMD_INFO,
     unique_id: Optional[str] = None,
     test_mode: bool = False,
+    annex_name: Optional[str] = None,
 ):
     # Only import htcondor.dags submit-side
     import htcondor.dags as dags
@@ -645,7 +659,9 @@ def make_inner_dag(
     pull_tof = [SANDBOX_FILE_NAME]
     pull_tor = {SANDBOX_FILE_NAME: "$(flattened_name)"}
 
-    shared_descriptors = shared_submit_descriptors(unique_id=unique_id, requirements=requirements)
+    shared_descriptors = shared_submit_descriptors(
+        unique_id=unique_id, requirements=requirements, annex_name=annex_name
+    )
 
     inner_dag.layer(
         name=direction,
@@ -667,7 +683,7 @@ def make_inner_dag(
                 "transfer_output_remaps": classad.quote(
                     " ; ".join(
                         "{} = {}".format(k, v)
-                        for k, v in {**tor, **(pull_tor if TransferDirection.PULL else {}),}.items()
+                        for k, v in {**tor, **(pull_tor if TransferDirection.PULL else {})}.items()
                     )
                 ),
                 **shared_descriptors,
@@ -859,7 +875,7 @@ def verify_metadata(local_path: Path, remote_digest, remote_path: Path, remote_s
     if remote_size != local_size:
         raise VerificationFailed(
             "Local file size ({} bytes) does not match remote file size ({} bytes)".format(
-                local_size, remote_size,
+                local_size, remote_size
             )
         )
 
@@ -1134,6 +1150,7 @@ def parse_args():
     add_requirements_args(sync)
     add_unique_id_arg(sync)
     add_test_mode_arg(sync)
+    add_annex_name_arg(sync)
 
     make_remote_file_manifest = subparsers.add_parser(Commands.MAKE_REMOTE_FILE_MANIFEST)
     make_remote_file_manifest.add_argument("src", type=Path)
@@ -1149,6 +1166,7 @@ def parse_args():
     add_requirements_args(write_inner_dag)
     add_unique_id_arg(write_inner_dag)
     add_test_mode_arg(write_inner_dag)
+    add_annex_name_arg(write_inner_dag)
 
     pull_file = subparsers.add_parser(Commands.PULL_FILE)
     pull_file.add_argument("src", type=Path)
@@ -1185,10 +1203,10 @@ def add_test_mode_arg(parser: argparse.ArgumentParser) -> None:
 
 def add_requirements_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--requirements", help="Submit file requirements (e.g. 'UniqueName == \"MyLab0001\"')",
+        "--requirements", help="Submit file requirements (e.g. 'UniqueName == \"MyLab0001\"')"
     )
     parser.add_argument(
-        "--requirements_file", help="File containing submit file requirements", type=Path,
+        "--requirements_file", help="File containing submit file requirements", type=Path
     )
 
 
@@ -1196,12 +1214,16 @@ def add_unique_id_arg(parser: argparse.ArgumentParser):
     parser.add_argument("--unique_id", help="Set UniqueId in submitted jobs")
 
 
+def add_annex_name_arg(parser: argparse.ArgumentParser):
+    parser.add_argument("--annex-name", help="Annex name that jobs must run on")
+
+
 def main():
     args = parse_args()
 
     logging.debug(
         "{} called with args:\n\t{}".format(
-            sys.argv[0], "\n\t".join("{} = {!r}".format(k, v) for k, v in vars(args).items()),
+            sys.argv[0], "\n\t".join("{} = {!r}".format(k, v) for k, v in vars(args).items())
         )
     )
 
@@ -1216,6 +1238,7 @@ def main():
             requirements=read_requirements_file(args.requirements_file) or args.requirements,
             unique_id=args.unique_id,
             test_mode=args.test_mode,
+            annex_name=args.annex_name,
         )
 
         print("Outer DAG is running in cluster {}".format(cluster_id))
@@ -1231,6 +1254,7 @@ def main():
             requirements=read_requirements_file(args.requirements_file) or args.requirements,
             test_mode=args.test_mode,
             unique_id=args.unique_id,
+            annex_name=args.annex_name,
         )
     elif args.cmd is Commands.PULL_FILE:
         check_running_as_job()
@@ -1270,7 +1294,7 @@ def check_already_running(unique_id: Optional[str]) -> None:
     )
     if len(existing_job) > 0:
         raise TransferAlreadyRunning(
-            'Jobs already found in queue with UniqueId == "{}"'.format(unique_id,)
+            'Jobs already found in queue with UniqueId == "{}"'.format(unique_id)
         )
 
 
