@@ -20,9 +20,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple, Type, TypeVar
 
-import classad
-import htcondor
-
 T_JSON = Dict[str, Any]
 T_CMD_INFO = List[Mapping[str, Path]]
 
@@ -392,6 +389,9 @@ def shared_submit_descriptors(
     requirements: Optional[str] = None,
     annex_name: Optional[str] = None,
 ) -> Dict[str, str]:
+    # Only import htcondor submit-side
+    import classad
+
     if executable is None:
         executable = THIS_FILE
 
@@ -421,7 +421,8 @@ def submit_outer_dag(
     test_mode: bool = False,
     annex_name: Optional[str] = None,
 ) -> int:
-    # Only import htcondor.dags submit-side
+    # Only import htcondor submit-side
+    import htcondor
     import htcondor.dags as dags
 
     working_dir = working_dir.resolve()
@@ -461,7 +462,8 @@ def make_outer_dag(
     test_mode: bool,
     annex_name: Optional[str],
 ):
-    # Only import htcondor.dags submit-side
+    # Only import htcondor submit-side
+    import htcondor
     import htcondor.dags as dags
 
     outer_dag = dags.DAG()
@@ -536,7 +538,7 @@ def write_inner_dag(
     unique_id=None,
     annex_name: Optional[str] = None,
 ):
-    # Only import htcondor.dags submit-side
+    # Only import htcondor submit-side
     import htcondor.dags as dags
 
     logging.info("Generating SUBGDAG for transfer of %s->%s", remote_prefix, local_prefix)
@@ -648,7 +650,9 @@ def make_inner_dag(
     test_mode: bool = False,
     annex_name: Optional[str] = None,
 ):
-    # Only import htcondor.dags submit-side
+    # Only import htcondor submit-side
+    import classad
+    import htcondor
     import htcondor.dags as dags
 
     inner_dag = dags.DAG(max_jobs_by_category={"TRANSFER_JOBS": 1} if test_mode else None)
@@ -1283,6 +1287,10 @@ def main():
 
 
 def check_already_running(unique_id: Optional[str]) -> None:
+    # Only import htcondor submit-side
+    import classad
+    import htcondor
+
     if not unique_id:
         return
 
