@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 """
-Utilize HTCondor to transfer / synchronize a directory from a source on an
-execute host to a local destination on the submit host.
+Use HTCondor to synchronize a directory on an access point with a directory
+on an execution point.
 """
 
 import abc
@@ -269,7 +269,7 @@ ENTRY_TYPE_TO_CLASS = {
 
 
 def read_manifest(path: Path) -> Iterator[Tuple[ManifestEntry, int]]:
-    with path.open(mode="r") as f:
+    with path.open(mode="r", encoding="utf-8") as f:
         for line_number, line in enumerate(f, start=1):
             line = line.strip()
 
@@ -298,7 +298,7 @@ def parse_manifest_entry(entry: str) -> ManifestEntry:
 def create_file_manifest(root_path: Path, manifest_path: Path, test_mode: bool = False) -> None:
     logging.info("Generating file listing for %s", root_path)
 
-    with manifest_path.open(mode="w") as f:
+    with manifest_path.open(mode="w", encoding="utf-8") as f:
         if not root_path.exists():
             return
 
@@ -342,7 +342,7 @@ def write_metadata_file(path: Path, hasher, size: int) -> None:
 
     logging.info("File metadata: {}".format(metadata))
 
-    with Path(METADATA_FILE_NAME).open(mode="w") as f:
+    with Path(METADATA_FILE_NAME).open(mode="w", encoding="utf-8") as f:
         metadata.write_entry_to(f)
 
     logging.info("Wrote metadata file")
@@ -370,12 +370,12 @@ def check_entry_type(entry: ManifestEntry, expected_type: Type[T]) -> T:
 
 
 def write_json(j: T_JSON, path: Path) -> None:
-    with path.open(mode="w") as f:
+    with path.open(mode="w", encoding="utf-8") as f:
         json.dump(j, f)
 
 
 def load_json(path: Path) -> T_JSON:
-    with path.open(mode="r") as f:
+    with path.open(mode="r", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -399,11 +399,14 @@ def shared_submit_descriptors(
         "executable": executable.as_posix(),
         "keep_claim_idle": "300",
         "request_disk": "1GB",
+        "request_memory": "512MB",
         "requirements": requirements or "true",
         "My.Is_Transfer_Job": "true",
         "My.WantFlocking": "true",  # special attribute for the CHTC pool, not necessary at other sites
-        "My.UniqueID": classad.quote(unique_id) if unique_id else "",
     }
+
+    if unique_id:
+        descriptors["My.UniqueID"] = classad.quote(unique_id)
 
     if annex_name:
         descriptors["My.TargetAnnexName"] = classad.quote(annex_name)
@@ -448,8 +451,9 @@ def submit_outer_dag(
 
     with change_dir(working_dir):
         schedd = htcondor.Schedd()
-        with schedd.transaction() as txn:
-            return sub.queue(txn)
+        result = schedd.submit(sub)
+
+        return result.cluster()
 
 
 def make_outer_dag(
@@ -622,7 +626,7 @@ def write_inner_dag(
     bytes_to_transfer = sum(src_files[fname] for fname in files_to_transfer)
     bytes_to_verify = sum(src_files[fname] for fname in files_to_verify)
 
-    with transfer_manifest_path.open(mode="a") as f:
+    with transfer_manifest_path.open(mode="a", encoding="utf-8") as f:
         SyncRequest(
             direction=direction,
             remote_prefix=remote_prefix,
@@ -853,7 +857,7 @@ def post_transfer(
             verify_metadata(local_name, remote_digest, remote_name, remote_size)
             flattened_name.unlink()
 
-    with transfer_manifest_path.open(mode="a") as f:
+    with transfer_manifest_path.open(mode="a", encoding="utf-8") as f:
         TransferComplete(
             name=local_name.relative_to(local_prefix),
             digest=remote_digest,
@@ -1127,7 +1131,7 @@ def analyze(transfer_manifest_path: Path) -> None:
         raise InconsistentManifest("There was work remaining!")
 
     if sync_request_start is not None:
-        with transfer_manifest_path.open(mode="a") as f:
+        with transfer_manifest_path.open(mode="a", encoding="utf-8") as f:
             SyncDone(timestamp=timestamp()).write_entry_to(f)
         print("Synchronization done; verification complete.")
     elif sync_count > 0:
@@ -1297,7 +1301,7 @@ def check_already_running(unique_id: Optional[str]) -> None:
     schedd = htcondor.Schedd()
     existing_job = schedd.query(
         constraint="UniqueId == {} && JobStatus =!= 4".format(classad.quote(unique_id)),
-        attr_list=[],
+        projection=[],
         limit=1,
     )
     if len(existing_job) > 0:
