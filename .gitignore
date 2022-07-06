@@ -13,3 +13,7 @@
 
 ## Build artifacts.
 /dist
+
+## HTCondor installation artifacts.
+/condor/
+/condor.tar.gz
