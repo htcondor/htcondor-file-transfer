@@ -1,0 +1,44 @@
+# A transfer host is an execution point that runs jobs where the attribute
+# IS_TRANSFER_JOB is true.
+
+use role: execute
+use security: user_based
+
+ALLOW_ADMINISTRATOR = $(authuser)@$(FULL_HOSTNAME) $(authuser)@$(IP_ADDRESS)
+
+START = TARGET.IS_TRANSFER_JOB
+
+#---------------------------------------------------------------------------
+
+## The hostname of the central manager to report to.
+CONDOR_HOST = cm.example.com
+
+## Attributes that identify this host.
+InstallUser = $(authuser)
+IsTransferHost = true
+UniqueName = strcat("file_transfer_ep_", $RANDOM_INTEGER(0, 2147483647))
+
+## The name of a local user that can read and write files as requested.
+SlotUser = $(authuser)
+
+#---------------------------------------------------------------------------
+
+## Enable SSL, for requesting IDTOKENs.
+SEC_DEFAULT_AUTHENTICATION_METHODS = FS, TOKEN, SSL
+SEC_CLIENT_AUTHENTICATION_METHODS = TOKEN, FS, SSL
+
+## Accommodate firewalls and other HTCondor installations on this host.
+CCB_ADDRESS = $(CONDOR_HOST)
+PRIVATE_NETWORK_NAME = $(UniqueName)
+SHARED_PORT_PORT = 0
+
+## Configure a single slot that runs jobs as $(SlotUser).
+SLOT_TYPE_1 = 100%
+NUM_SLOTS_TYPE_1 = 1
+SLOT1_USER = $(SlotUser)
+STARTER_ALLOW_RUNAS_OWNER = False
+
+## Report meaningful names and attributes to the collector.
+MASTER_NAME = $(UniqueName)@$(FULL_HOSTNAME)
+STARTD_NAME = $(UniqueName)@$(FULL_HOSTNAME)
+STARTD_ATTRS = $(STARTD_ATTRS), UniqueName, InstallUser, IsTransferHost, SlotUser
