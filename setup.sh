@@ -2,13 +2,12 @@
 # vim: tabstop=4
 
 # Install and configure an HTCondor file transfer host. The caller must
-# supply the hostname of the central manager to use and a unique name to
-# identify this host.
+# supply the hostname of the central manager to use and a unique name for
+# identifying this host.
 
 set -eu
 
-INSTALL_DIR="$PWD/condor"
-SLOT_USER="$(whoami)"
+INSTALL_DIR="${PWD}/condor"
 THIS_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 
 usage() {
@@ -20,11 +19,13 @@ Required arguments:
     -n <unique name for this EP>
 
 Optional arguments:
-    -p <directory to install into> [default: $INSTALL_DIR]
-    -u <slot user> [default: $SLOT_USER]
+    -i <token identity> [default: $(whoami)@<central manager>]
+    -p <directory to install into> [default: ${INSTALL_DIR}]
 EOF
     exit 1
 }
+
+#---------------------------------------------------------------------------
 
 info() {
     printf '%s\n' "$*"
@@ -35,14 +36,11 @@ warn() {
 }
 
 fail_no_exit() {
-    echo "ERROR: $*" 1>&2
+    printf '%s\n' "ERROR: $*" 1>&2
 }
 
 fail() {
     fail_no_exit "$@"
-    if [ -n "${LOGFILE:-}" ]; then
-        echo "Check $LOGFILE for more details" 1>&2
-    fi
     exit 1
 }
 
@@ -62,20 +60,19 @@ inplace_sed() {
 
 #---------------------------------------------------------------------------
 
-
-while getopts "c:n:p:u:" OPTION; do
-    case "$OPTION" in
+while getopts "c:n:i:p:" OPTION; do
+    case "${OPTION}" in
         c)
-            CENTRAL_MANAGER="$OPTARG"
+            CENTRAL_MANAGER="${OPTARG}"
             ;;
         n)
-            MACHINE_NAME="$OPTARG"
+            UNIQUE_NAME="${OPTARG}"
+            ;;
+        i)
+            TOKEN_IDENTITY="${OPTARG}"
             ;;
         p)
-            INSTALL_DIR="$OPTARG"
-            ;;
-        u)
-            SLOT_USER="$OPTARG"
+            INSTALL_DIR="${OPTARG}"
             ;;
         \?)
             usage
@@ -83,58 +80,90 @@ while getopts "c:n:p:u:" OPTION; do
     esac
 done
 
-if [ -z "${CENTRAL_MANAGER:-}" ] || [ -z "${MACHINE_NAME:-}" ]; then
-    fail_no_exit "Missing requirement arguments."
+if [ -z "${CENTRAL_MANAGER:-}" ] || [ -z "${UNIQUE_NAME:-}" ]; then
+    fail_no_exit "Missing required arguments."
     usage
 fi
 
-if ! host "$CENTRAL_MANAGER" 1>/dev/null 2>&1; then
-    fail "'$CENTRAL_MANAGER' is not a valid hostname."
+if ! host "${CENTRAL_MANAGER}" 1>/dev/null 2>&1; then
+    fail "'${CENTRAL_MANAGER}' is not a valid hostname."
 fi
 
-if [[ ! "$MACHINE_NAME" =~ ^[A-Za-z0-9_]+$ ]]; then
+if [[ ! "${UNIQUE_NAME}" =~ ^[A-Za-z0-9_]+$ ]]; then
     fail "The name for this EP may contain only alphanumeric characters and underscores."
 fi
 
-if ! id -u "$SLOT_USER" 1>/dev/null 2>&1; then
-    fail "'$SLOT_USER' is not a valid user."
+if [ -z "${TOKEN_IDENTITY:-}" ]; then
+    TOKEN_IDENTITY="$(whoami)@${CENTRAL_MANAGER}"
 fi
 
-if [ "$SLOT_USER" = "root" ]; then
-    fail "Transfer jobs cannot run as 'root'."
-fi
-
-if [ -e "$INSTALL_DIR" ]; then
-    fail "Cannot install into '$INSTALL_DIR' because it already exists."
+if [ -e "${INSTALL_DIR}" ]; then
+    fail "Cannot install into '${INSTALL_DIR}' because it already exists."
 fi
 
 #---------------------------------------------------------------------------
 
-echo "Creating '$(dirname -- "$INSTALL_DIR")'..."
-mkdir -p "$(dirname -- "$INSTALL_DIR")"
+info "Creating '$(dirname -- "${INSTALL_DIR}")'..."
+mkdir -p "$(dirname -- "${INSTALL_DIR}")"
 
-echo "Downloading and expanding HTCondor tarball..."
+info "Downloading and expanding HTCondor tarball..."
 curl -fsSL https://get.htcondor.org | /bin/bash -s -- --download
 tar -x -f condor.tar.gz
-mv condor-*stripped "$INSTALL_DIR"
+mv condor-*stripped "${INSTALL_DIR}"
 
-echo "Configuring HTCondor..."
-(cd "$INSTALL_DIR" && ./bin/make-personal-from-tarball)
+info "Configuring HTCondor..."
+(cd "${INSTALL_DIR}" && ./bin/make-personal-from-tarball)
 
 # Remove the personal pool that was just configured.
 # The transfer host configuration is intended to stand on its own.
-rm -f "$INSTALL_DIR"/local/config.d/*
+rm -f "${INSTALL_DIR}"/local/config.d/*
 
 # Update the configuration template using a temporary file in order to
 # reduce the chance of leaving behind a broken HTCondor configuration should
 # this script fail in some unexpected way.
-tmp_config="$(mktemp "$THIS_DIR"/10-xfer-host.XXXXX)"
-cp "$THIS_DIR"/templates/10-xfer-host "$tmp_config"
+TMP_CONFIG="$(mktemp "${THIS_DIR}"/10-xfer-host.XXXXXX)"
+cp "${THIS_DIR}"/templates/10-xfer-host "${TMP_CONFIG}"
 
-inplace_sed -e "s/^CONDOR_HOST.*/CONDOR_HOST = $CENTRAL_MANAGER/" "$tmp_config"
-inplace_sed -e "s/^SlotUser.*/SlotUser = $SLOT_USER/" "$tmp_config"
-inplace_sed -e "s/^UniqueName.*/UniqueName = $MACHINE_NAME/" "$tmp_config"
+inplace_sed -e "s/__CONDOR_HOST__/${CENTRAL_MANAGER}/" "${TMP_CONFIG}"
+inplace_sed -e "s/__UniqueName__/${UNIQUE_NAME}/" "${TMP_CONFIG}"
 
-mv "$tmp_config" "$INSTALL_DIR"/local/config.d/10-xfer-host
+mv "${TMP_CONFIG}" "${INSTALL_DIR}"/local/config.d/10-xfer-host
 
-fail "Not implemented: Requesting an IDTOKEN."
+#---------------------------------------------------------------------------
+
+info "Checking connectivity to '${CENTRAL_MANAGER}'..."
+
+if ! CONDOR_CONFIG="${INSTALL_DIR}/etc/condor_config" "${INSTALL_DIR}"/bin/condor_ping \
+        -pool "${CENTRAL_MANAGER}" \
+        -type collector \
+        ADVERTISE_MASTER ADVERTISE_STARTD
+then
+    mkdir -p ~/.condor/tokens.d
+    chmod 700 ~/.condor/tokens.d
+
+    TOKEN_FILE=~/.condor/tokens.d/advertise_"${UNIQUE_NAME}"_"$(date +%Y%m%d_%H%M%S)"
+
+    info "Requesting token from '${CENTRAL_MANAGER}'..."
+
+    CONDOR_CONFIG="${INSTALL_DIR}/etc/condor_config" "${INSTALL_DIR}"/bin/condor_token_request \
+        -authz ADVERTISE_MASTER \
+        -authz ADVERTISE_STARTD \
+        -identity "${TOKEN_IDENTITY}" \
+        -token "${TOKEN_FILE}"
+fi
+
+#---------------------------------------------------------------------------
+
+cat <<EOF
+
+Setup completed.
+
+Run the following to start your file transfer EP:
+
+    (source "${INSTALL_DIR}"/condor.sh && condor_master)
+
+Run the following to shut down your file transfer EP:
+
+    (source "${INSTALL_DIR}"/condor.sh && condor_off -master)
+
+EOF
