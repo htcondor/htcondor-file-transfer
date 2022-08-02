@@ -38,6 +38,7 @@ REMOTE_MANIFEST_FILE_NAME = "remote_manifest.txt"
 TRANSFER_MANIFEST_FILE_NAME = "transfer_manifest.txt"
 TRANSFER_COMMANDS_FILE_NAME = "transfer_commands.json"
 VERIFY_COMMANDS_FILE_NAME = "verify_commands.json"
+DRY_RUN_OUTPUT_FILE_NAME = "dry_run.json"
 
 OUTER_DAG_NAME = "outer.dag"
 INNER_DAG_NAME = "inner.dag"
@@ -245,6 +246,15 @@ class SyncRequest(Timestamp):
         self._info["remote_prefix"] = Path(self._info["remote_prefix"])
 
 
+class SyncRequestV2(SyncRequest):
+    keys = SyncRequest.keys + ("dry_run",)
+
+    def __init__(self, **info):
+        super().__init__(**info)
+
+        self._info["dry_run"] = bool(self._info["dry_run"])
+
+
 class SyncDone(Timestamp):
     keys = ("timestamp",)
 
@@ -423,6 +433,7 @@ def submit_outer_dag(
     unique_id: Optional[str] = None,
     test_mode: bool = False,
     annex_name: Optional[str] = None,
+    dry_run: bool = False,
 ) -> int:
     # Only import htcondor submit-side
     import htcondor
@@ -443,6 +454,7 @@ def submit_outer_dag(
         unique_id=unique_id,
         test_mode=test_mode,
         annex_name=annex_name,
+        dry_run=dry_run,
     )
 
     outer_dag_file = dags.write_dag(outer_dag, dag_dir=working_dir, dag_file_name=OUTER_DAG_NAME)
@@ -465,6 +477,7 @@ def make_outer_dag(
     unique_id: Optional[str],
     test_mode: bool,
     annex_name: Optional[str],
+    dry_run: bool,
 ):
     # Only import htcondor submit-side
     import htcondor
@@ -516,6 +529,7 @@ def make_outer_dag(
                 "--unique_id={}".format(unique_id) if unique_id is not None else "",
                 "--test-mode" if test_mode else "",
                 "--annex-name={}".format(annex_name) if annex_name is not None else "",
+                "--dry-run" if dry_run else "",
             ],
         ),
     ).child_subdag(
@@ -539,8 +553,9 @@ def write_inner_dag(
     local_prefix: Path,
     requirements=None,
     test_mode: bool = False,
-    unique_id=None,
+    unique_id: Optional[str] = None,
     annex_name: Optional[str] = None,
+    dry_run: bool = False,
 ):
     # Only import htcondor submit-side
     import htcondor.dags as dags
@@ -596,6 +611,24 @@ def write_inner_dag(
     files_to_transfer = sorted(files_to_transfer)
     files_to_verify = sorted(files_to_verify)
 
+    if dry_run:
+        files_to_transfer = [os.fspath(p) for p in files_to_transfer]
+        files_to_verify = [os.fspath(p) for p in files_to_verify]
+
+        with Path(DRY_RUN_OUTPUT_FILE_NAME).open(mode="w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "files_to_transfer": files_to_transfer,
+                    "files_to_verify": files_to_verify,
+                },
+                f,
+                sort_keys=True,
+                indent=2,
+            )
+
+        files_to_transfer = []
+        files_to_verify = []
+
     if direction is TransferDirection.PULL:
         ensure_local_dirs_exist(local_prefix, files_to_transfer)
 
@@ -627,7 +660,7 @@ def write_inner_dag(
     bytes_to_verify = sum(src_files[fname] for fname in files_to_verify)
 
     with transfer_manifest_path.open(mode="a", encoding="utf-8") as f:
-        SyncRequest(
+        SyncRequestV2(
             direction=direction,
             remote_prefix=remote_prefix,
             files_at_source=len(src_files),
@@ -636,6 +669,7 @@ def write_inner_dag(
             files_to_verify=len(files_to_verify),
             bytes_to_verify=bytes_to_verify,
             timestamp=timestamp(),
+            dry_run=dry_run,
         ).write_entry_to(f)
 
         for fname in files_to_transfer:
@@ -1159,6 +1193,7 @@ def parse_args():
     add_unique_id_arg(sync)
     add_test_mode_arg(sync)
     add_annex_name_arg(sync)
+    add_dry_run_arg(sync)
 
     make_remote_file_manifest = subparsers.add_parser(Commands.MAKE_REMOTE_FILE_MANIFEST)
     make_remote_file_manifest.add_argument("src", type=Path)
@@ -1175,6 +1210,7 @@ def parse_args():
     add_unique_id_arg(write_inner_dag)
     add_test_mode_arg(write_inner_dag)
     add_annex_name_arg(write_inner_dag)
+    add_dry_run_arg(write_inner_dag)
 
     pull_file = subparsers.add_parser(Commands.PULL_FILE)
     pull_file.add_argument("src", type=Path)
@@ -1226,6 +1262,14 @@ def add_annex_name_arg(parser: argparse.ArgumentParser):
     parser.add_argument("--annex-name", help="Annex name that jobs must run on")
 
 
+def add_dry_run_arg(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--dry-run",
+        help="Show files that would be transfered, but do not transfer them",
+        action="store_true",
+    )
+
+
 def main():
     args = parse_args()
 
@@ -1247,6 +1291,7 @@ def main():
             unique_id=args.unique_id,
             test_mode=args.test_mode,
             annex_name=args.annex_name,
+            dry_run=args.dry_run,
         )
 
         print("Outer DAG is running in cluster {}".format(cluster_id))
@@ -1263,6 +1308,7 @@ def main():
             test_mode=args.test_mode,
             unique_id=args.unique_id,
             annex_name=args.annex_name,
+            dry_run=args.dry_run,
         )
     elif args.cmd is Commands.PULL_FILE:
         check_running_as_job()
