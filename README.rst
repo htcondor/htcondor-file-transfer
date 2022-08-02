@@ -20,6 +20,8 @@ Requirements
 
 * Outgoing network connectivity to the central manager.
 
+* The name of the owner of the transfer jobs that should run on the EP.
+
 
 Quickstart
 ----------
@@ -32,7 +34,7 @@ Quickstart
 
     cd htcondor_file_transfer_ep
 
-    ./setup.sh -c <central manager's hostname> -n <unique name for this EP>
+    ./setup.sh -c <central manager's hostname> -n <unique name for this EP> -u <name of the transfer jobs' owner>
 
    Run the script without any arguments to see all of the available options.
 

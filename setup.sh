@@ -17,6 +17,7 @@ Usage: $0 ...
 Required arguments:
     -c <central manager's hostname>
     -n <unique name for this EP>
+    -u <name of the transfer jobs' owner>
 
 Optional arguments:
     -i <token identity> [default: $(whoami)@<central manager>]
@@ -37,6 +38,12 @@ warn() {
 
 fail_no_exit() {
     printf '%s\n' "ERROR: $*" 1>&2
+}
+
+fail_with_usage() {
+    fail_no_exit "$@"
+    echo
+    usage
 }
 
 fail() {
@@ -60,13 +67,16 @@ inplace_sed() {
 
 #---------------------------------------------------------------------------
 
-while getopts "c:n:i:p:" OPTION; do
+while getopts "c:n:u:i:p:" OPTION; do
     case "${OPTION}" in
         c)
             CENTRAL_MANAGER="${OPTARG}"
             ;;
         n)
             UNIQUE_NAME="${OPTARG}"
+            ;;
+        u)
+            JOB_OWNER="${OPTARG}"
             ;;
         i)
             TOKEN_IDENTITY="${OPTARG}"
@@ -80,17 +90,24 @@ while getopts "c:n:i:p:" OPTION; do
     esac
 done
 
-if [ -z "${CENTRAL_MANAGER:-}" ] || [ -z "${UNIQUE_NAME:-}" ]; then
-    fail_no_exit "Missing required arguments."
-    usage
+if [ -z "${CENTRAL_MANAGER:-}" ]; then
+    fail_with_usage "Missing required argument (-c)."
 fi
 
 if ! host "${CENTRAL_MANAGER}" 1>/dev/null 2>&1; then
     fail "'${CENTRAL_MANAGER}' is not a valid hostname."
 fi
 
+if [ -z "${UNIQUE_NAME:-}" ]; then
+    fail_with_usage "Missing required argument (-n)."
+fi
+
 if [[ ! "${UNIQUE_NAME}" =~ ^[A-Za-z0-9_]+$ ]]; then
     fail "The name for this EP may contain only alphanumeric characters and underscores."
+fi
+
+if [ -z "${JOB_OWNER:-}" ]; then
+    fail_with_usage "Missing required argument (-u)."
 fi
 
 if [ -z "${TOKEN_IDENTITY:-}" ]; then
@@ -125,6 +142,7 @@ TMP_CONFIG="$(mktemp "${THIS_DIR}"/10-xfer-host.XXXXXX)"
 cp "${THIS_DIR}"/templates/10-xfer-host "${TMP_CONFIG}"
 
 inplace_sed -e "s/__CONDOR_HOST__/${CENTRAL_MANAGER}/" "${TMP_CONFIG}"
+inplace_sed -e "s/__JobOwner__/${JOB_OWNER}/" "${TMP_CONFIG}"
 inplace_sed -e "s/__UniqueName__/${UNIQUE_NAME}/" "${TMP_CONFIG}"
 
 mv "${TMP_CONFIG}" "${INSTALL_DIR}"/local/config.d/10-xfer-host

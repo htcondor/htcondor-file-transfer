@@ -6,7 +6,7 @@ use security: user_based
 
 ALLOW_ADMINISTRATOR = $(authuser)@$(FULL_HOSTNAME) $(authuser)@$(IP_ADDRESS)
 
-START = TARGET.IS_TRANSFER_JOB
+START = TARGET.IS_TRANSFER_JOB && TARGET.OWNER == "__JobOwner__"
 
 #---------------------------------------------------------------------------
 
