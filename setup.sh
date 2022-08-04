@@ -52,7 +52,20 @@ fail() {
 }
 
 inplace_sed() {
-    sed -i "$@"
+    case "$(uname -s)" in
+        Darwin)
+            sed -i "" "$@"
+            ;;
+        Linux)
+            sed -i "$@"
+            ;;
+        opensuse-leap)
+            sed -i "$@"
+            ;;
+        *)
+            fail "This host's operating system is not supported."
+            ;;
+    esac
 }
 
 #---------------------------------------------------------------------------
