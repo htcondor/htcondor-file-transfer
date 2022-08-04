@@ -59,6 +59,9 @@ inplace_sed() {
         Linux)
             sed -i "$@"
             ;;
+        opensuse-leap)
+            sed -i "$@"
+            ;;
         *)
             fail "This host's operating system is not supported."
             ;;
