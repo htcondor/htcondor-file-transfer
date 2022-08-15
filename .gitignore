@@ -17,3 +17,6 @@
 ## HTCondor installation artifacts.
 /condor/
 /condor.tar.gz
+
+## Default location for secrets, such as IDTOKENs.
+/secrets/

@@ -6,17 +6,24 @@ use security: user_based
 
 ALLOW_ADMINISTRATOR = $(authuser)@$(FULL_HOSTNAME) $(authuser)@$(IP_ADDRESS)
 
-START = TARGET.IS_TRANSFER_JOB && TARGET.OWNER == "__JobOwner__"
+# The following attributes can be defined either via environment variables
+# or by substituting values for __XYZ__.
+
+MY_CONDOR_HOST = $ENV(CENTRAL_MANAGER:__CONDOR_HOST__)
+MY_JOB_OWNER = $ENV(JOB_OWNER:__JobOwner__)
+MY_UNIQUE_NAME = $ENV(UNIQUE_NAME:__UniqueName__)
+
+START = TARGET.IS_TRANSFER_JOB && TARGET.OWNER == $STRING($(MY_JOB_OWNER))
 
 #---------------------------------------------------------------------------
 
 ## The hostname of the central manager to report to.
-CONDOR_HOST = __CONDOR_HOST__
+CONDOR_HOST = $(MY_CONDOR_HOST)
 
 ## Attributes that identify this host.
 InstallUser = $(authuser)
 IsTransferHost = true
-UniqueName = "__UniqueName__"
+UniqueName = $STRING($(MY_UNIQUE_NAME))
 
 ## The name of a local user that can read and write files as requested.
 SlotUser = $(authuser)
@@ -39,6 +46,6 @@ SLOT1_USER = $(SlotUser)
 STARTER_ALLOW_RUNAS_OWNER = False
 
 ## Report meaningful names and attributes to the collector.
-MASTER_NAME = __UniqueName__
-STARTD_NAME = __UniqueName__
+MASTER_NAME = $(MY_UNIQUE_NAME)
+STARTD_NAME = $(MY_UNIQUE_NAME)
 STARTD_ATTRS = $(STARTD_ATTRS), UniqueName, InstallUser, IsTransferHost, SlotUser

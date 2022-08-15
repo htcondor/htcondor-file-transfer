@@ -1,0 +1,12 @@
+## Temporary files created by vim.
+**/*.swp
+
+## Configuration and cache directories for various tools.
+/.*
+
+## HTCondor installation artifacts.
+/condor/
+/condor.tar.gz
+
+## Default location for secrets, such as IDTOKENs.
+/secrets/
