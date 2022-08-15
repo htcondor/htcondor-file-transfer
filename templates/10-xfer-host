@@ -13,7 +13,7 @@ MY_CONDOR_HOST = $ENV(CENTRAL_MANAGER:__CONDOR_HOST__)
 MY_JOB_OWNER = $ENV(JOB_OWNER:__JobOwner__)
 MY_UNIQUE_NAME = $ENV(UNIQUE_NAME:__UniqueName__)
 
-START = TARGET.IS_TRANSFER_JOB && TARGET.OWNER == $STRING($(MY_JOB_OWNER))
+START = TARGET.IS_TRANSFER_JOB && TARGET.OWNER == "$(MY_JOB_OWNER)"
 
 #---------------------------------------------------------------------------
 
@@ -23,7 +23,7 @@ CONDOR_HOST = $(MY_CONDOR_HOST)
 ## Attributes that identify this host.
 InstallUser = $(authuser)
 IsTransferHost = true
-UniqueName = $STRING($(MY_UNIQUE_NAME))
+UniqueName = "$(MY_UNIQUE_NAME)"
 
 ## The name of a local user that can read and write files as requested.
 SlotUser = $(authuser)
