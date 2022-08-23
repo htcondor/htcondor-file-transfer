@@ -1,0 +1,31 @@
+---
+version: "3.0"
+
+services:
+  file-transfer-ep:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TRANSFER_UID: ${TRANSFER_UID}
+        TRANSFER_GID: ${TRANSFER_GID}
+
+    image: htcondor-file-transfer-ep:latest
+    container_name: htcondor-file-transfer-ep
+    restart: always
+
+    environment:
+      CENTRAL_MANAGER: ${CENTRAL_MANAGER}
+      JOB_OWNER: ${JOB_OWNER}
+      UNIQUE_NAME: ${UNIQUE_NAME}
+
+    secrets:
+    - source: idtoken
+      target: /etc/condor/tokens.d/token
+
+    volumes:
+    - ${DATA_DIR}:/data:rw
+
+secrets:
+  idtoken:
+    file: secrets/token
