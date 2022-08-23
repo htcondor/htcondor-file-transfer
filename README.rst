@@ -42,37 +42,15 @@ mounts.
 
    Run the script without any arguments to see all of the available options.
 
-3. Start the EP container. In the command below, replace ``<...>`` with the
-   appropriate values.
+3. Update the configuration values in the `.env file <.env>`_.
 
-   ::
+4. Build the container image:
 
-    docker run -d \
-      -e CENTRAL_MANAGER=<central manager's hostname> \
-      -e JOB_OWNER=<name of the transfer jobs' owner> \
-      -e UNIQUE_NAME=<unique name for this EP> \
-      -v <full path to the token from step 2>:/etc/condor/tokens.d/token \
-      -v <full path to the directory to synchronize>:/data \
-      hub.opensciencegrid.org/opensciencegrid/htcondor-file-transfer-ep:latest
+    docker compose build
 
-   You might need to provide the following additional arguments to ``docker
-   run``:
+5. Start the container:
 
-   ``--user <name|uid>[:<group|gid>]``
-      Run the container as the given user (and group). This user should have
-      the ability to read and write files to the directory being synchronized.
-
-   ``--name <string>``
-      Assign a name to the container. This can make it easier to identify
-      and manage.
-
-Note: When running `xfer.py`_, the "remote" path should be given as
-``/data``, because the path needs to be what the EP sees from inside the
-running container.
-
-::
-
-    xfer.py sync push <local directory> /data ...
+    docker compose up -d
 
 
 Quickstart: Running the EP directly on a host
