@@ -17,7 +17,7 @@ From: htcondor/mini:9.10-el7
     printf '%s\n' "LOCAL_DIR = /condor/local" > /etc/condor/config.d/99-local-dir
 
 %environment
-    HTCONDOR_LOCAL_DIR=/condor/local
+    export HTCONDOR_LOCAL_DIR=/condor/local
 
 %runscript
     /opt/osg/bin/singularity-start.sh

@@ -139,7 +139,7 @@ rm -f "${INSTALL_DIR}"/local/config.d/*
 # reduce the chance of leaving behind a broken HTCondor configuration should
 # this script fail in some unexpected way.
 TMP_CONFIG="$(mktemp "${THIS_DIR}"/10-xfer-host.XXXXXX)"
-cp "${THIS_DIR}"/templates/10-xfer-host "${TMP_CONFIG}"
+cp "${THIS_DIR}"/config.d/10-xfer-host "${TMP_CONFIG}"
 
 inplace_sed -e "s/__CONDOR_HOST__/${CENTRAL_MANAGER}/" "${TMP_CONFIG}"
 inplace_sed -e "s/__JobOwner__/${JOB_OWNER}/" "${TMP_CONFIG}"

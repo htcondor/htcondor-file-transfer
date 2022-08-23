@@ -15,4 +15,4 @@ RUN set -eu \
     && groupadd -g ${TRANSFER_GID} slotuser \
     && useradd -g ${TRANSFER_GID} -u ${TRANSFER_UID} slotuser
 
-COPY templates/10-xfer-host templates/11-xfer-user ${CONFIG_D_DIR}/
+COPY config.d/10-xfer-host config.d/11-xfer-user ${CONFIG_D_DIR}/

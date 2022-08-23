@@ -12,6 +12,7 @@
 /poetry.lock
 
 ## Build artifacts.
+*.sif
 /dist
 
 ## HTCondor installation artifacts.
