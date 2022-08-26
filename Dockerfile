@@ -1,18 +1,25 @@
 FROM htcondor/mini:9.10-el7
 
-ENV CONFIG_D_DIR=/etc/condor/config.d
 
-ARG TRANSFER_UID
-ENV TRANSFER_UID=${TRANSFER_UID:-1010}
+# Remove the "minicondor" configuration.
+# Prepare /condor/local for storing HTCondor's logs and ephemeral data.
+# Prepare /condor/tokens.d for storing the EP's IDTOKEN.
 
-ARG TRANSFER_GID
-ENV TRANSFER_GID=${TRANSFER_GID:-1010}
 
-RUN set -eu \
-    && rm \
-        ${CONFIG_D_DIR}/00-htcondor-9.0.config \
-        ${CONFIG_D_DIR}/00-minicondor \
-    && groupadd -g ${TRANSFER_GID} slotuser \
-    && useradd -g ${TRANSFER_GID} -u ${TRANSFER_UID} slotuser
+RUN rm \
+      /etc/condor/config.d/00-htcondor-9.0.config \
+      /etc/condor/config.d/00-minicondor \
+    && mkdir -m 0755 /condor \
+    && mkdir -m 0777 /condor/local \
+    && mkdir -m 0755 /condor/tokens.d
 
-COPY config.d/10-xfer-host config.d/11-xfer-user ${CONFIG_D_DIR}/
+
+# Copy in the new startup script, which should prepare HTCondor's "local"
+# directory by creating the necessary subdirectories as the user running the
+# container.
+
+
+COPY bin/start.sh /opt/osg/bin/
+COPY config.d/10-xfer-host /etc/condor/config.d/
+
+ENTRYPOINT ["/opt/osg/bin/start.sh"]

@@ -30,6 +30,10 @@ SlotUser = $(authuser)
 
 #---------------------------------------------------------------------------
 
+## Set directories to locations that can be used by $(authuser).
+LOCAL_DIR = /condor/local
+SEC_TOKEN_DIRECTORY = /condor/tokens.d
+
 ## Enable SSL, for requesting IDTOKENs.
 SEC_DEFAULT_AUTHENTICATION_METHODS = FS, TOKEN, SSL
 SEC_CLIENT_AUTHENTICATION_METHODS = TOKEN, FS, SSL

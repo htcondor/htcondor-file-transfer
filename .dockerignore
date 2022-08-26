@@ -4,6 +4,9 @@
 ## Configuration and cache directories for various tools.
 /.*
 
+## Build artifacts.
+**/*.sif
+
 ## HTCondor installation artifacts.
 /condor/
 /condor.tar.gz

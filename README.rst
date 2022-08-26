@@ -42,15 +42,11 @@ mounts.
 
    Run the script without any arguments to see all of the available options.
 
-3. Update the configuration values in the `.env file <.env>`_.
-
-4. Build the container image:
-
-    docker compose build
+3. Copy ``.env.template`` to ``.env`` and update it for your setup.
 
 5. Start the container:
 
-    docker compose up -d
+    ./run_docker.sh
 
 
 Quickstart: Running the EP directly on a host

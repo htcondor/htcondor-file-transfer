@@ -107,6 +107,7 @@ docker run -t --rm \
     -e CENTRAL_MANAGER="${CENTRAL_MANAGER}" \
     -e _condor_SEC_TOKEN_DIRECTORY=/output \
     -v "$(cd -- "${TOKEN_DIR}" && pwd)":/output \
+    -u "$(id -u)":"$(id -g)" \
     "${EP_REPO}${EP_IMAGE}" condor_token_request \
         -authz ADVERTISE_MASTER \
         -authz ADVERTISE_STARTD \

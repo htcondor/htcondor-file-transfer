@@ -1,26 +1,8 @@
 Bootstrap: docker
-From: htcondor/mini:9.10-el7
-
-%files
-    ## Copy the startup script.
-    bin/singularity-start.sh /opt/osg/bin/singularity-start.sh
-
-    ## Copy the EP's configuration.
-    config.d/10-xfer-host /etc/condor/config.d/
-
-%post
-    ## Remove the "minicondor" configuration.
-    rm -f /etc/condor/config.d/0*
-
-    ## Make a writeable directory for HTCondor's dynamic data.
-    mkdir -m 777 -p /condor/local
-    printf '%s\n' "LOCAL_DIR = /condor/local" > /etc/condor/config.d/99-local-dir
-
-%environment
-    export HTCONDOR_LOCAL_DIR=/condor/local
+From: hub.opensciencegrid.org/opensciencegrid/htcondor-file-transfer-ep:latest
 
 %runscript
-    /opt/osg/bin/singularity-start.sh
+    /opt/osg/bin/start.sh
 
 %startscript
-    /opt/osg/bin/singularity-start.sh
+    /opt/osg/bin/start.sh

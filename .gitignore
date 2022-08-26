@@ -15,6 +15,9 @@
 *.sif
 /dist
 
+## Configuration artifacts.
+/.env
+
 ## HTCondor installation artifacts.
 /condor/
 /condor.tar.gz
