@@ -1,6 +1,11 @@
 FROM htcondor/mini:9.10-el7
 
 
+RUN yum update -y \
+    && yum clean all \
+    && rm -rf /var/cache/yum/
+
+
 # Remove the "minicondor" configuration.
 # Prepare /condor/local for storing HTCondor's logs and ephemeral data.
 # Prepare /condor/tokens.d for storing the EP's IDTOKEN.
