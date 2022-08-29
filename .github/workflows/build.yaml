@@ -5,7 +5,7 @@ on:
     branches:
     - main
     tags:
-    - v*
+    - '[0-9]*'
 
 jobs:
   build-and-push:
@@ -23,10 +23,10 @@ jobs:
         images: |
           hub.opensciencegrid.org/opensciencegrid/htcondor-file-transfer-ep
         tags: |
-          type=ref,event=branch,pattern=docker-{{branch}}
-          type=ref,event=tag,pattern=docker-{{tag}}
-          type=raw,value=docker-{{date 'YYYYMMDD-HHmmss'}},enable={{is_default_branch}}
-          type=raw,value=docker-latest,enable={{is_default_branch}}
+          type=ref,event=branch,pattern={{branch}}-docker
+          type=ref,event=tag,pattern={{tag}}-docker
+          type=raw,value={{date 'YYYYMMDD-HHmmss'}}-docker,enable={{is_default_branch}}
+          type=raw,value=latest-docker,enable={{is_default_branch}}
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v1
