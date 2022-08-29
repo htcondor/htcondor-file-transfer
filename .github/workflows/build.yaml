@@ -25,7 +25,7 @@ jobs:
         tags: |
           type=ref,event=branch,pattern=docker-{{branch}}
           type=ref,event=tag,pattern=docker-{{tag}}
-          type=raw,value=docker-{{date 'YYYYMMDDTHHmmssZZ'}},enable={{is_default_branch}}
+          type=raw,value=docker-{{date 'YYYYMMDD-HHmmss'}},enable={{is_default_branch}}
           type=raw,value=docker-latest,enable={{is_default_branch}}
 
     - name: Set up Docker Buildx
