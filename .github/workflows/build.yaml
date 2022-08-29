@@ -22,7 +22,7 @@ jobs:
       with:
         flavor: |
           latest=false
-          suffix=docker
+          suffix=-docker
         images: |
           hub.opensciencegrid.org/opensciencegrid/htcondor-file-transfer-ep
         tags: |
