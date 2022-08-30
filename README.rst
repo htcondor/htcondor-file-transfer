@@ -26,9 +26,9 @@ Requirements
 Quickstart: Running the EP as a container
 -----------------------------------------
 
-In this setup, the EP runs as a Docker container. Configuration and the
-directory to synchronize are provided via environment variables and volume
-mounts.
+In this setup, the EP runs as a container using Docker or Singularity.
+Configuration and the directory to synchronize are provided via environment
+variables and volume mounts.
 
 1. Clone this repository::
 
@@ -42,11 +42,21 @@ mounts.
 
    Run the script without any arguments to see all of the available options.
 
+   Note that this command will hang until the token request is approved. Run
+   it while in contact with the central manager's administrators.
+
 3. Copy ``.env.template`` to ``.env`` and update it for your setup.
 
-5. Start the container:
+4. Start the EP as a Docker container::
 
     ./run_docker.sh
+
+   Or as a Singularity container::
+
+    ./run_singularity.sh [optional name for the instance]
+
+5. Use ``docker container stop`` or ``singularity instance stop`` to stop
+   the container.
 
 
 Quickstart: Running the EP directly on a host
