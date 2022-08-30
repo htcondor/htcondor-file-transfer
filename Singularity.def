@@ -1,8 +1,8 @@
 Bootstrap: docker
-From: hub.opensciencegrid.org/opensciencegrid/htcondor-file-transfer-ep:latest
+From: hub.opensciencegrid.org/opensciencegrid/htcondor-file-transfer-ep:latest-docker
 
 %runscript
-    /opt/osg/bin/start.sh
+    exec /opt/osg/bin/start.sh
 
 %startscript
-    /opt/osg/bin/start.sh
+    exec /opt/osg/bin/start.sh
