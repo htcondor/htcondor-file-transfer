@@ -1,11 +1,20 @@
 name: Build and push container images
 
+# These triggers and image tags are designed for the following workflows:
+#
+#   - Development: When a new commit is pushed to a branch.
+#
+#   - Production: When a new release is tagged. The tag should be a version
+#     number of the form "{major}.{minor}{...}".
+#
+# The idea is that one pushes to a branch, tests it, then tags it.
+
 on:
   push:
     branches:
-    - main
+    - '*'
     tags:
-    - '[0-9]*'
+    - '[0-9]+[.][0-9]+*'
 
 jobs:
   build-and-push:
@@ -21,15 +30,14 @@ jobs:
       uses: docker/metadata-action@v4
       with:
         flavor: |
-          latest=false
           suffix=-docker
         images: |
           hub.opensciencegrid.org/opensciencegrid/htcondor-file-transfer-ep
         tags: |
           type=ref,event=branch
           type=ref,event=tag
-          type=raw,value={{date 'YYYYMMDD-HHmmss'}}
           type=raw,value=latest,enable={{is_default_branch}}
+          type=raw,value={{date 'YYYYMMDD-HHmmss'}}
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v1
