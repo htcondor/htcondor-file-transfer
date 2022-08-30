@@ -2,19 +2,12 @@
 # vim: tabstop=4
 
 # Interactively request an IDTOKEN for an HTCondor file transfer host.
-#
-# For development:
-#
-#   - Build and tag EP_IMAGE manually.
-#   - When running this script, in the environment, set EP_REPO to "".
-#     (The `-` in the parameter expansion is a bit of Bash magic.)
 
 set -eu
 
 THIS_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
-EP_REPO="${EP_REPO-hub.opensciencegrid.org/opensciencegrid/}"
-EP_IMAGE="htcondor-file-transfer-ep:latest"
-TOKEN_FILE="${THIS_DIR}/secrets/token"
+
+source "${THIS_DIR}"/.run_common.sh
 
 usage() {
     cat 1>&2 <<EOF
@@ -108,7 +101,7 @@ docker run -t --rm \
     -e _condor_SEC_TOKEN_DIRECTORY=/output \
     -v "$(cd -- "${TOKEN_DIR}" && pwd)":/output \
     -u "$(id -u)":"$(id -g)" \
-    "${EP_REPO}${EP_IMAGE}" condor_token_request \
+    "${DOCKER_IMAGE}" condor_token_request \
         -authz ADVERTISE_MASTER \
         -authz ADVERTISE_STARTD \
         -identity "${TOKEN_IDENTITY}" \
