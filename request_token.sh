@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC1091
 # vim: tabstop=4
 
 # Interactively request an IDTOKEN for an HTCondor file transfer host.
@@ -7,7 +8,9 @@ set -eu
 
 THIS_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 
-source "${THIS_DIR}"/.run_common.sh
+TOKEN_FILE="${THIS_DIR}/secrets/token"
+
+source "${THIS_DIR}"/.env.release
 
 usage() {
     cat 1>&2 <<EOF
