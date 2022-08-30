@@ -27,4 +27,4 @@ RUN rm \
 COPY bin/start.sh /opt/osg/bin/
 COPY config.d/10-xfer-host /etc/condor/config.d/
 
-ENTRYPOINT ["/opt/osg/bin/start.sh"]
+CMD ["/opt/osg/bin/start.sh"]
