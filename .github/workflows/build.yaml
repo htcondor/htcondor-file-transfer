@@ -30,6 +30,7 @@ jobs:
       uses: docker/metadata-action@v4
       with:
         flavor: |
+          latest=false
           suffix=-docker
         images: |
           hub.opensciencegrid.org/opensciencegrid/htcondor-file-transfer-ep
