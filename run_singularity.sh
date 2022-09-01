@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC1091
 # vim: tabstop=4
 
 # Start the EP as a Singularity container.

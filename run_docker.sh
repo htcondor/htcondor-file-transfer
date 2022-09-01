@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC1091
 # vim: tabstop=4
 
 # Start the EP as a Docker container.
@@ -21,5 +22,7 @@ docker run -d \
   -v "${TOKEN_FILE}":/condor/tokens.d/token \
   -v "${DATA_DIR}":/data \
   -v "${LOCAL_DIR}":/condor/local \
+  \
+  --name "${1:-htcondor-file-transfer-ep}" \
   \
   "${DOCKER_IMAGE}"

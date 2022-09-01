@@ -49,7 +49,7 @@ variables and volume mounts.
 
 4. Start the EP as a Docker container::
 
-    ./run_docker.sh
+    ./run_docker.sh [optional name for the container]
 
    Or as a Singularity container::
 
