@@ -591,7 +591,6 @@ def write_inner_dag(
         fname for fname, size in src_files.items() if size != dest_files.get(fname, -1)
     }
 
-    # TODO: rethink this logic for push vs. pull
     # Check for files that we have already verified, and do not verify them again.
     files_verified = set()
     for entry, _ in read_manifest(transfer_manifest_path):
@@ -600,12 +599,13 @@ def write_inner_dag(
 
         files_verified.add(entry.name)
 
+    # Verify files that already exist at the source and destination.
     files_to_verify = set()
-    for fname in remote_files:
+    for fname in src_files:
         if fname in files_to_transfer:
             continue
 
-        if fname not in files_verified:
+        if fname in dest_files and fname not in files_verified:
             files_to_verify.add(fname)
 
     files_to_transfer = sorted(files_to_transfer)
