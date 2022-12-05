@@ -1,0 +1,96 @@
+HTCondor File Transfer Execution Point
+
+NOTES on running a transfer job
+
+
+- follow Quickstart in the readme for "Running the EP as a container"
+
+- in step 2, the central manager's hostname is "cm.chtc.wisc.edu"
+
+- take note of the request ID
+
+- if you are CHTC staff with root on the CM, you can approve the token
+  request yourself - log into cm.chtc.wisc.edu and as root/sudo run
+
+      # condor_token_request_approve -reqid ID
+
+- if you lost the request ID, you can see what's pending there with
+
+      # condor_token_request_list
+
+- after step 3, you need to edit your ".env" file
+
+- need to set:
+
+  CENTRAL_MANAGER=cm.chtc.wisc.edu
+  UNIQUE_NAME=pick-a-unique-name-here
+  JOB_OWNER=your-user-on-the-AP
+
+- also consider setting DATA_DIR to a directory on the HOST where you will
+  run the EP, which will be mounted onto /data inside the EP container
+
+- take a minute to note the distro version inside the Dockerfile; it should
+  have a line like:
+
+      FROM htcondor/mini:9.10-el7
+
+- the "el7" there corresponds to "OpSysMajorVer == 7". (you may need
+  to add this later to your transfer job requirements in order for your
+  transfer job to match properly.)
+
+- for step 4, i ran the Docker version, but you may want to run the
+  Singularity one.  I did not need to include the "optional name for the
+  container"
+
+- with any luck you can now log into your AP (eg submit2) and run something
+  like
+
+  $ condor_status | grep your-unique-name-here
+
+  and find a slot for your running container; eg
+
+      "slot1@your-unique-name-here@conainerhash"
+
+- if that's all good you can submit the xfer job
+
+- the tool repo to clone is:
+
+    https://github.com/HTPhenotyping/htcondor_file_transfer
+
+- clone it locally and enter the repo checkout
+
+- make a "working dir" locally for all the condor logs to live; eg:
+
+      $ mkdir working
+
+- make a destination dir, if you are pulling files from the EP; eg:
+
+      $ mkdir dest
+
+- if you want to pull files from the DATA_DIR on your host, remember
+  that this is mounted to "/data" inside the EP container.
+
+- the command line to start the transfer job to sync your DATA_DIR from
+  your host to your newly-created dest dir on the AP would be:
+
+      $ req='UniqueName == "mystras-xfer-ep" && OpSysMajorVer == 7'
+      $ ./xfer.py sync --requirements "$req" \
+                       --working-dir working/ pull dest/ /data
+
+- and again note that OpSysMajorVer should match what you found in the
+  Dockerfile from the EP container setup (in htcondor_file_transfer_ep)
+
+- to go the other way, to send a src dir on the AP to the DATA_DIR on
+  you host, use the "push" command instead
+
+      $ mkdir src  # and put stuff in it
+
+      $ req='UniqueName == "mystras-xfer-ep" && OpSysMajorVer == 7'
+      $ ./xfer.py sync --requirements "$req" \
+                       --working-dir working/ push src/ /data
+
+
+- you can watch progress on the AP by doing condor_q, or watching the
+  logs under your new "working" dir.  It may take some time for everything
+  to finish.
+
