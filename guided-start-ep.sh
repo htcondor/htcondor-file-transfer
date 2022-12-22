@@ -17,12 +17,17 @@ prompt CM "Enter the central manager's hostname; Default: cm.chtc.wisc.edu"
 
 [[ $CM ]] || CM=cm.chtc.wisc.edu
 
+if [[ -f $TOKEN_FILE ]]; then
+  echo "Using existing token file: $TOKEN_FILE"
+else
+
 echo
 echo "Please note the following Request ID, and ask CHTC staff to approve"
 echo "this request on $CM with: condor_token_request_approve -reqid ID"
 echo
 
-./request_token.sh -c "$CM"
+  ./request_token.sh -c "$CM"
+fi
 
 cp .env.template .env
 
@@ -62,6 +67,9 @@ echo "Use these settings?
   DATA_DIR=$DD;
   LOCAL_DIR=$LD;
 "
+if [[ -f $TOKEN_FILE ]]; then
+  echo "  TOKEN_FILE=$TOKEN_FILE"
+fi
 prompt OK "OK? [y/N]"
 
 [[ $OK = [yY] ]] || fail Quitting.
@@ -71,6 +79,10 @@ sed -i "s;CENTRAL_MANAGER=.*;CENTRAL_MANAGER=$CM;
         s;JOB_OWNER=.*;JOB_OWNER=$JO;
         s;DATA_DIR=.*;DATA_DIR=$DD;
         s;LOCAL_DIR=.*;LOCAL_DIR=$LD;" .env
+
+if [[ -f $TOKEN_FILE ]]; then
+  sed -i "s;TOKEN_FILE=.*;TOKEN_FILE=$TOKEN_FILE;" .env
+fi
 
 echo
 echo "Starting the singularity container..."
