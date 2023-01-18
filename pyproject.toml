@@ -8,7 +8,7 @@ requires = ["poetry-core>=1.0.0"]
 
 [tool.black]
 line-length = 96
-target-version = ["py38", "py39", "py310"]
+target-version = ["py36", "py37", "py38", "py39", "py310"]
 
 
 [tool.isort]
@@ -50,19 +50,19 @@ packages = []
 
 
 [tool.poetry.dependencies]
-python = "^3.8"
+python = "^3.6.8"
 
 
 [tool.poetry.dev-dependencies]
 bandit = "~1.7"
-black = "~22.6"
-docutils = "~0.19"
+black = "~22.8"
+docutils = "~0.18"
 isort = "~5.10"
 mypy = "~0.971"
-pre-commit = "~2.20"
-pylint = "~2.15"
-"ruamel.yaml.cmd" = "~0.5"
-safety = "~2.1"
+pre-commit = "~2.17"
+pylint = "~2.13"
+"ruamel.yaml.cmd" = "~0.6"
+safety = "~2.3"
 
 
 [tool.pylint.messages-control]
